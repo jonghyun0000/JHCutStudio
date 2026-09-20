@@ -135,7 +135,9 @@ import JHCutCore
             let pacedRenders = model.livePreviewRenders - pacedBefore
             model.commitLiveEdit()
             await settle(model)
-            check("Paced drag gives continuous feedback", pacedRenders >= 8 && pacedRenders < ticks,
+            // Never more renders than ticks; coalescing itself is proven by the synchronous-burst check
+            // above. Matching the tick rate exactly is the best case, not a failure.
+            check("Paced drag gives continuous feedback", pacedRenders >= 8 && pacedRenders <= ticks,
                   "\(pacedRenders) previews for \(ticks) ticks over 1s ≈ \(pacedRenders) fps of feedback")
 
             // ---- Latency of a single live update. ----
@@ -153,6 +155,26 @@ import JHCutCore
                   String(format: "%.0f ms per live preview", latency * 1000))
             print(String(format: "LIVE_TIMING singleUpdate=%.0fms dragOf30Ticks=%.0fms renders=%d",
                          latency * 1000, dragSeconds * 1000, model.livePreviewRenders))
+
+            // ---- Format switching from the editor, not just from the engine. ----
+            let beforeFormat = model.project
+            model.setFormat(width: 3840, height: 2160, frameRate: FrameRate(numerator: 24, denominator: 1))
+            await settle(model)
+            let seq = model.project.sequence
+            check("Editor applies a 4K 24fps format",
+                  seq.width == 3840 && seq.height == 2160 && seq.frameRate == FrameRate(numerator: 24, denominator: 1),
+                  "\(seq.width)×\(seq.height) @ \(seq.frameRate.label)fps")
+            check("Preview plan rebuilds at the new canvas",
+                  model.plan?.videoComposition.renderSize == CGSize(width: 3840, height: 2160),
+                  "renderSize \(model.plan.map { "\(Int($0.videoComposition.renderSize.width))×\(Int($0.videoComposition.renderSize.height))" } ?? "nil")")
+            check("Frame stepping follows the new rate", abs(model.frameStep - 1.0 / 24) < 1e-9,
+                  String(format: "%.5fs per frame", model.frameStep))
+            check("Bitrate recommendation follows the canvas", model.outputBitRate > 8_000_000,
+                  "\(model.outputBitRate / 1_000_000)Mbps for 2160p24")
+            model.undo()
+            await settle(model)
+            check("Undo restores the previous format", model.project == beforeFormat,
+                  "\(model.project.sequence.width)×\(model.project.sequence.height) @ \(model.project.sequence.frameRate.label)fps")
         } catch {
             check("Probe execution", false, error.localizedDescription)
         }

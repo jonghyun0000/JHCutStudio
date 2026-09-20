@@ -132,33 +132,61 @@ final class TimelineCanvas: NSView {
     }
     override func draw(_ dirtyRect: NSRect) {
         guard let model else { return }
-        NSColor(calibratedWhite: 0.07, alpha: 1).setFill(); dirtyRect.fill()
+        // Canvas token, shared with the SwiftUI chrome so the timeline reads as one surface with it.
+        NSColor(calibratedWhite: 0.055, alpha: 1).setFill(); dirtyRect.fill()
         let visible = visibleRect
+
+        // Ruler band: a seam under it separates time from content without a hard divider.
+        NSColor.white.withAlphaComponent(0.035).setFill()
+        NSRect(x: visible.minX, y: 0, width: visible.width, height: rulerHeight).fill()
+        NSColor.white.withAlphaComponent(0.09).setFill()
+        NSRect(x: visible.minX, y: rulerHeight - 0.5, width: visible.width, height: 0.5).fill()
+
         let step = model.zoom > 90 ? 1 : model.zoom > 30 ? 2 : 5
         let first = max(0, Int(visible.minX / model.zoom) / step * step)
         let last = Int(visible.maxX / model.zoom) + step
         for second in stride(from: first, through: last, by: step) {
             let x = CGFloat(second) * model.zoom
-            NSColor.white.withAlphaComponent(0.08).setStroke()
-            let line = NSBezierPath(); line.move(to: NSPoint(x: x, y: 21)); line.line(to: NSPoint(x: x, y: bounds.height)); line.lineWidth = 0.5; line.stroke()
-            drawText(String(format: "%02d:%02d", second / 60, second % 60), rect: NSRect(x: x + 5, y: 5, width: 60, height: 18), size: 9, color: .secondaryLabelColor)
+            // Minute marks read stronger than second marks.
+            let major = second % 60 == 0
+            NSColor.white.withAlphaComponent(major ? 0.14 : 0.055).setStroke()
+            let line = NSBezierPath()
+            line.move(to: NSPoint(x: x, y: rulerHeight)); line.line(to: NSPoint(x: x, y: bounds.height))
+            line.lineWidth = 0.5; line.stroke()
+            NSColor.white.withAlphaComponent(major ? 0.3 : 0.16).setFill()
+            NSRect(x: x, y: rulerHeight - (major ? 9 : 5), width: 0.5, height: major ? 9 : 5).fill()
+            drawText(String(format: "%02d:%02d", second / 60, second % 60),
+                     rect: NSRect(x: x + 5, y: 5, width: 60, height: 14), size: 9,
+                     color: NSColor.white.withAlphaComponent(major ? 0.62 : 0.4))
         }
+
         for (index, track) in model.project.sequence.tracks.enumerated() {
+            let laneTop = rulerHeight + CGFloat(index) * laneHeight
+            // Alternating lane wash gives vertical rhythm without drawing a grid.
+            if index % 2 == 1 {
+                NSColor.white.withAlphaComponent(0.018).setFill()
+                NSRect(x: visible.minX, y: laneTop, width: visible.width, height: laneHeight).fill()
+            }
             let y = rulerHeight + CGFloat(index + 1) * laneHeight
-            NSColor.white.withAlphaComponent(0.065).setFill(); NSRect(x: visible.minX, y: y, width: visible.width, height: 1).fill()
+            NSColor.white.withAlphaComponent(0.055).setFill()
+            NSRect(x: visible.minX, y: y - 0.5, width: visible.width, height: 0.5).fill()
+
             for original in track.clips {
                 let clip = drafts[original.id] ?? original
                 let r = rect(for: clip, lane: index)
                 guard r.intersects(visible) else { continue }
-                let color: NSColor
-                switch track.kind {
-                case .video: color = NSColor(calibratedRed: 0.23, green: 0.48, blue: 0.65, alpha: 1)
-                case .overlay: color = NSColor(calibratedRed: 0.48, green: 0.38, blue: 0.64, alpha: 1)
-                case .title: color = NSColor(calibratedRed: 0.65, green: 0.49, blue: 0.23, alpha: 1)
-                case .audio: color = NSColor(calibratedRed: 0.22, green: 0.51, blue: 0.42, alpha: 1)
-                }
-                color.withAlphaComponent(track.isHidden ? 0.25 : 0.8).setFill()
-                let shape = NSBezierPath(roundedRect: r, xRadius: 5, yRadius: 5); shape.fill()
+                let color = Self.trackColor(track.kind)
+                let shape = NSBezierPath(roundedRect: r, xRadius: 8, yRadius: 8)
+
+                // Vertical gradient plus a top highlight: the clip reads as a raised surface, matching
+                // the way glass chrome above it catches light.
+                let dim = track.isHidden ? 0.28 : 1.0
+                let gradient = NSGradient(starting: color.blended(withFraction: 0.18, of: .white)?.withAlphaComponent(0.92 * dim) ?? color,
+                                          ending: color.blended(withFraction: 0.22, of: .black)?.withAlphaComponent(0.92 * dim) ?? color)
+                gradient?.draw(in: shape, angle: -90)
+                NSColor.white.withAlphaComponent(0.16 * dim).setStroke()
+                shape.lineWidth = 1; shape.stroke()
+
                 NSGraphicsContext.saveGraphicsState(); shape.addClip()
                 if let id = clip.assetID, let thumbnail = thumbnails[id] {
                     thumbnail.draw(in: NSRect(x: r.minX + 4, y: r.minY + 3, width: 48, height: 36), from: .zero, operation: .sourceOver, fraction: 0.65, respectFlipped: true, hints: nil)
@@ -174,21 +202,44 @@ final class TimelineCanvas: NSView {
                     drawText("파형 읽기 실패", rect: NSRect(x: r.maxX - 90, y: r.minY + 25, width: 84, height: 12), size: 8, color: .orange)
                 }
                 if model.selectedClipIDs.contains(clip.id) || model.selectedClipID == clip.id {
-                    NSColor(calibratedRed: 0.43, green: 0.93, blue: 0.80, alpha: 1).setStroke(); shape.lineWidth = 2; shape.stroke()
-                    NSColor.white.withAlphaComponent(0.85).setFill()
-                    NSRect(x: r.minX + 3, y: r.minY + 14, width: 2, height: 15).fill(); NSRect(x: r.maxX - 5, y: r.minY + 14, width: 2, height: 15).fill()
+                    // Halo then crisp edge, so selection survives on both light and dark clip colours.
+                    Self.accent.withAlphaComponent(0.35).setStroke(); shape.lineWidth = 4; shape.stroke()
+                    Self.accent.setStroke(); shape.lineWidth = 1.5; shape.stroke()
+                    Self.accent.withAlphaComponent(0.95).setFill()
+                    NSBezierPath(roundedRect: NSRect(x: r.minX + 3, y: r.midY - 8, width: 2.5, height: 16), xRadius: 1.25, yRadius: 1.25).fill()
+                    NSBezierPath(roundedRect: NSRect(x: r.maxX - 5.5, y: r.midY - 8, width: 2.5, height: 16), xRadius: 1.25, yRadius: 1.25).fill()
                 }
             }
         }
         if let snapGuide {
             let x = snapGuide.seconds * model.zoom
-            NSColor(calibratedRed: 0.4, green: 0.95, blue: 0.85, alpha: 0.7).setFill()
-            NSRect(x: x, y: 0, width: 1, height: bounds.height).fill()
+            Self.accent.withAlphaComponent(0.8).setFill()
+            NSRect(x: x - 0.5, y: rulerHeight, width: 1, height: bounds.height - rulerHeight).fill()
         }
-        let px = model.playhead * model.zoom
-        NSColor(calibratedRed: 0.94, green: 0.42, blue: 0.36, alpha: 1).setFill()
-        NSRect(x: px, y: 0, width: 1.5, height: bounds.height).fill()
-        let head = NSBezierPath(); head.move(to: NSPoint(x: px - 5, y: 0)); head.line(to: NSPoint(x: px + 6, y: 0)); head.line(to: NSPoint(x: px + 1, y: 9)); head.close(); head.fill()
+        drawPlayhead(at: model.playhead * model.zoom)
+    }
+
+    static let accent = NSColor(calibratedRed: 0.36, green: 0.84, blue: 0.74, alpha: 1)
+    static let playheadColor = NSColor(calibratedRed: 0.98, green: 0.41, blue: 0.35, alpha: 1)
+    static func trackColor(_ kind: TrackKind) -> NSColor {
+        switch kind {
+        case .video: return NSColor(calibratedRed: 0.24, green: 0.52, blue: 0.78, alpha: 1)
+        case .overlay: return NSColor(calibratedRed: 0.55, green: 0.42, blue: 0.82, alpha: 1)
+        case .title: return NSColor(calibratedRed: 0.85, green: 0.60, blue: 0.24, alpha: 1)
+        case .audio: return NSColor(calibratedRed: 0.20, green: 0.63, blue: 0.51, alpha: 1)
+        }
+    }
+
+    /// A capsule head on the ruler with a hairline stem, rather than a triangle on a 1.5pt bar.
+    private func drawPlayhead(at x: CGFloat) {
+        Self.playheadColor.withAlphaComponent(0.28).setFill()
+        NSRect(x: x - 1.5, y: rulerHeight, width: 3, height: bounds.height - rulerHeight).fill()
+        Self.playheadColor.setFill()
+        NSRect(x: x - 0.5, y: rulerHeight, width: 1, height: bounds.height - rulerHeight).fill()
+        let head = NSBezierPath(roundedRect: NSRect(x: x - 7, y: 4, width: 14, height: rulerHeight - 9), xRadius: 4, yRadius: 4)
+        head.fill()
+        NSColor.black.withAlphaComponent(0.55).setFill()
+        NSRect(x: x - 0.5, y: 9, width: 1, height: rulerHeight - 19).fill()
     }
     private func drawText(_ text: String, rect: NSRect, size: CGFloat, color: NSColor) {
         let style = NSMutableParagraphStyle(); style.lineBreakMode = .byTruncatingTail

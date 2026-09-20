@@ -63,6 +63,7 @@ final class EditorModel: ObservableObject {
     @Published var timelineScrollY = 0.0
     @Published var safeAreaVisible = false
     @Published var outputBitRate = 8_000_000
+    @Published var outputQuality: ExportJob.Quality = .standard
     var busyDocument: Bool { isExporting || isImporting || productivityBusy || proxyBusy }
 
     private var observer: Any?
@@ -70,6 +71,17 @@ final class EditorModel: ObservableObject {
     private var menuTrackingCount = 0
     private var menuObservers: [NSObjectProtocol] = []
     var project: Project { history.project }
+    /// Every UI timebase derives from the sequence, so a 24 or 60fps project steps correctly.
+    var frameRate: FrameRate { project.sequence.frameRate }
+    var fps: Double { frameRate.fps }
+    var frameStep: Double { 1.0 / max(1, fps) }
+    /// Nearest frame boundary as an exact rational, never a float round-trip.
+    func snapped(_ seconds: Double) -> MediaTime {
+        let frame = max(0, Int64((seconds * fps).rounded()))
+        let time = frameRate.time(forFrame: frame)
+        let limit = project.sequence.duration
+        return time > limit ? limit : time
+    }
     var captionClips: [Clip] { project.sequence.tracks.filter { $0.kind == .title }.flatMap(\.clips).sorted { $0.start < $1.start } }
     var allTitlePresets: [TitlePreset] { userTitlePresets + TitlePreset.builtIns }
     private func projectData() -> Data? { let encoder = JSONEncoder(); encoder.outputFormatting = [.sortedKeys]; return try? encoder.encode(project) }
@@ -88,7 +100,7 @@ final class EditorModel: ObservableObject {
         if let data = try? Data(contentsOf: Self.presetsURL), let presets = try? JSONDecoder().decode([TitlePreset].self, from: data) { userTitlePresets = presets }
         refreshTranscriptionStatus()
         player.actionAtItemEnd = .pause
-        observer = player.addPeriodicTimeObserver(forInterval: CMTime(value: 1, timescale: 30), queue: .main) { [weak self] time in
+        observer = player.addPeriodicTimeObserver(forInterval: CMTime(value: 1, timescale: 60), queue: .main) { [weak self] time in
             Task { @MainActor in
                 guard let self else { return }
                 if self.player.rate != 0 { self.playhead = time.seconds }
@@ -117,8 +129,8 @@ final class EditorModel: ObservableObject {
             if event.modifierFlags.intersection([.command, .control, .option]).isEmpty {
                 switch event.keyCode {
                 case 49: self.togglePlay(); return nil
-                case 123: self.seek(self.playhead - 1.0 / 30); return nil
-                case 124: self.seek(self.playhead + 1.0 / 30); return nil
+                case 123: self.seek(self.playhead - self.frameStep); return nil
+                case 124: self.seek(self.playhead + self.frameStep); return nil
                 case 51, 117: self.remove(); return nil
                 default: break
                 }
@@ -141,14 +153,15 @@ final class EditorModel: ObservableObject {
         history.redo(); message = "타임라인 재실행"; scheduleRecovery(); rebuild()
     }
     func seek(_ seconds: Double) {
-        playhead = max(0, min(project.sequence.duration.seconds, (seconds * 30).rounded() / 30))
-        player.seek(to: CMTime(value: Int64((playhead * 30).rounded()), timescale: 30), toleranceBefore: .zero, toleranceAfter: .zero)
+        let time = snapped(seconds)
+        playhead = time.seconds
+        player.seek(to: time.cmTime, toleranceBefore: .zero, toleranceAfter: .zero)
     }
     func togglePlay() {
         guard !isBuilding, !isExporting, plan != nil else { return }
         stopAudition()
         if player.rate != 0 { player.pause(); playing = false }
-        else { if playhead >= project.sequence.duration.seconds - 1.0 / 30 { seek(0) }; player.play(); playing = true }
+        else { if playhead >= project.sequence.duration.seconds - frameStep { seek(0) }; player.play(); playing = true }
     }
     func rebuild() {
         buildTask?.cancel(); buildGeneration += 1
@@ -373,7 +386,7 @@ final class EditorModel: ObservableObject {
     func exportVideo() {
         guard plan != nil, !isBuilding, !busyDocument else { return }
         let panel = NSSavePanel(); panel.allowedContentTypes = [.mpeg4Movie]; panel.nameFieldStringValue = project.name + ".mp4"
-        panel.message = "\(project.sequence.width) × \(project.sequence.height) · 30 fps · SDR H.264 / AAC · \(outputBitRate / 1_000_000)Mbps"
+        panel.message = "\(project.sequence.width) × \(project.sequence.height) · \(frameRate.label) fps · SDR H.264 / AAC · \(outputBitRate / 1_000_000)Mbps"
         guard panel.runModal() == .OK, let url = panel.url else { return }
         if FileManager.default.fileExists(atPath: url.path) { error = "기존 파일 보호를 위해 다른 출력 이름을 선택하세요."; return }
         stopAudition(); player.pause(); playing = false; isExporting = true; exportProgress = 0
@@ -432,7 +445,7 @@ final class EditorModel: ObservableObject {
                 asset.provenance = AssetProvenance(sourceURL: item.sourceURL, author: item.author, license: item.license, licenseURL: item.licenseURL, sha256: item.sha256)
                 let kind: TrackKind = asset.kind == .audio ? .audio : .overlay
                 guard let track = project.sequence.tracks.first(where: { $0.kind == kind }) else { return }
-                let available = max(MediaTime(1, 30), project.sequence.duration - insertion)
+                let available = max(frameRate.time(forFrame: 1), project.sequence.duration - insertion)
                 let length = asset.kind == .image ? (project.sequence.duration > insertion ? min(available, MediaTime(5, 1)) : MediaTime(5, 1)) : (item.category == .music && project.sequence.duration > insertion ? min(asset.duration, available) : asset.duration)
                 var clip = Clip(name: item.name, assetID: asset.id, start: insertion, duration: length, volume: item.category == .music ? 0.25 : 0.7)
                 if item.category == .music { let fade = min(MediaTime(1, 1), MediaTime(seconds: length.seconds / 4)); clip.audioFadeIn = fade; clip.audioFadeOut = fade }
@@ -491,6 +504,18 @@ final class EditorModel: ObservableObject {
             message = "SRT 저장됨 · 스타일은 프로젝트 문서에 별도로 보존됩니다."
         } catch { self.error = error.localizedDescription }
     }
+    /// Applies a new canvas and/or frame rate to the active sequence. Clip times are rational, so they
+    /// survive a rate change unchanged; only the snapping grid the UI offers moves.
+    func setFormat(width: Int, height: Int, frameRate newRate: FrameRate) {
+        guard !busyDocument else { return }
+        var sequence = project.sequence
+        sequence.width = width; sequence.height = height; sequence.frameRate = newRate
+        guard perform(.replaceSequence(sequence)) else { return }
+        outputBitRate = ExportJob.recommendedBitRate(width: width, height: height, fps: newRate.fps,
+                                                     quality: outputQuality)
+        message = "\(width) × \(height) · \(newRate.label) fps"
+    }
+
     func derive(width: Int, height: Int, name: String) {
         perform(.deriveSequence(name: name, width: width, height: height)); selectedClipID = nil; selectedClipIDs = []; seek(0)
     }

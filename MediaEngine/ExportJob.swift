@@ -9,7 +9,25 @@ public final class ExportJob: @unchecked Sendable {
     private var started = false
     private let minimumFreeSpaceOverride: Int64?
     private let videoBitRate: Int
-    public static let supportedVideoBitRates = [4_000_000, 8_000_000, 16_000_000]
+    /// Tiers, not a free-form number: the encoder is validated at these rates only. The upper tiers
+    /// exist for 4K, where 8Mbps is not a usable picture.
+    public static let supportedVideoBitRates = [4_000_000, 8_000_000, 16_000_000, 24_000_000, 40_000_000, 64_000_000]
+
+    /// Quality relative to the canvas, since a fixed Mbps means something different at 1080 and 4K.
+    public enum Quality: String, CaseIterable, Sendable { case small, standard, high }
+
+    /// Nearest supported tier for a canvas, from bits-per-pixel-per-frame targets that hold across
+    /// resolutions. Rounds to a tier so the exporter's validation stays a closed set.
+    public static func recommendedBitRate(width: Int, height: Int, fps: Double, quality: Quality = .standard) -> Int {
+        let bitsPerPixel: Double
+        switch quality {
+        case .small: return supportedVideoBitRates.first ?? 4_000_000
+        case .standard: bitsPerPixel = 0.10
+        case .high: bitsPerPixel = 0.20
+        }
+        let target = Double(max(1, width * height)) * max(1, fps) * bitsPerPixel
+        return supportedVideoBitRates.min { abs(Double($0) - target) < abs(Double($1) - target) } ?? 8_000_000
+    }
     /// Raises the preflight threshold for controlled low-space tests; it never bypasses the normal minimum.
     public init(minimumFreeSpaceOverride: Int64? = nil, videoBitRate: Int = 8_000_000) { self.minimumFreeSpaceOverride = minimumFreeSpaceOverride; self.videoBitRate = videoBitRate }
     public func cancel() { lock.lock(); cancelled = true; lock.unlock() }
@@ -21,7 +39,9 @@ public final class ExportJob: @unchecked Sendable {
         started = true
     }
     public func export(plan: RenderPlan, to destination: URL, progress: @escaping (Double) -> Void) async throws {
-        guard Self.supportedVideoBitRates.contains(videoBitRate) else { throw MediaEngineError.invalid("지원 출력 비트레이트는 4, 8, 16Mbps입니다.") }
+        guard Self.supportedVideoBitRates.contains(videoBitRate) else {
+            throw MediaEngineError.invalid("지원 출력 비트레이트는 4, 8, 16, 24, 40, 64Mbps입니다.")
+        }
         guard !plan.usesProxyMedia else { throw MediaEngineError.invalid("프록시 미리보기는 출력할 수 없습니다. 원본 미디어로 출력 계획을 만드세요.") }
         try begin()
         try await withTaskCancellationHandler(operation: {

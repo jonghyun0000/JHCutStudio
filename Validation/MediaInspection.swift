@@ -48,7 +48,10 @@ enum MediaInspection {
                 result.images[result.frameCount] = cgImage
             }
             result.frameCount += 1
-            result.videoEndSeconds = timestamp + (frameDuration.isFinite && frameDuration > 0 ? frameDuration : 1 / 30)
+            // H.264 often omits per-sample durations. Fall back to the track's own nominal rate rather
+            // than to 30fps, which silently mis-measured every non-30fps output.
+            let fallback = result.nominalFrameRate > 0 ? 1 / Double(result.nominalFrameRate) : 1.0 / 30
+            result.videoEndSeconds = timestamp + (frameDuration.isFinite && frameDuration > 0 ? frameDuration : fallback)
         }
         guard reader.status == .completed else { throw reader.error ?? ValidationFailure.failed("Video decode did not complete") }
         let audioTracks = try await asset.loadTracks(withMediaType: .audio)

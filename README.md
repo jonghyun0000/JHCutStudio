@@ -24,7 +24,9 @@ bash Scripts/run.sh
 - 삽입·덮어쓰기·오디오 분리·트랙 관리, 키프레임/페이드를 보존하는 분할·트림.
 - 실제 PCM 피크/RMS·무음 후보·피크 정규화, 프로젝트 원본 수집·검증.
 - 자막 병합·일괄 시간 이동, UTF-16/CP949 추가, 한국어 Whisper 설치/인식 UI. **모델 설치와 실제 한국어 인식 검증은 승인 대기**입니다.
-- H.264 출력 4/8/16Mbps, 검색·속성 접기·안전 영역·타임라인 자동 스크롤.
+- **4K UHD·DCI 4K 출력과 23.976~60fps 지원.** 캔버스·프레임레이트·품질을 속성에서 고릅니다. 비트레이트는 해상도에 맞춰 자동 제안합니다.
+- **macOS 26 Liquid Glass 디자인.** 창 툴바 통합, 영상 위 떠 있는 재생 컨트롤, 투명도 줄이기 설정 존중, 아이콘 버튼 전체에 VoiceOver 레이블.
+- H.264 출력 4~64Mbps, 검색·속성 접기·안전 영역·타임라인 자동 스크롤.
 - 속성 슬라이더를 드래그하는 동안 미리보기가 바로 바뀝니다. 드래그 한 번은 실행취소 1단계입니다. 숫자 입력은 Return 또는 `입력한 숫자 적용`을 씁니다.
 - 편집마다 타임라인 전체를 다시 조합하던 비용을 없앴습니다. 10분·300컷 타임라인의 조합 재구축이 11.510초에서 0.070초입니다. 합성 소재 기준이며 실사 장시간 편집을 검증한 값은 아닙니다.
 
@@ -44,13 +46,13 @@ Space 재생/정지, ←/→ 프레임 이동, Cmd+B 분할, Cmd+D 복제, Delet
 ## 지원과 안전성
 
 - 입력: SDR 메타데이터가 확인되는 H.264·HEVC·ProRes 422 계열, PNG·JPEG·HEIC, 실제 디코딩에 성공한 오디오. **HDR/Log·색 정보가 불명확한 파일은 차단**합니다. 지원 세부 프로필과 실제 시험 범위는 엔진 감사 문서를 참조하세요.
-- 출력: 30fps SDR Rec.709 H.264 MP4, 오디오가 있으면 AAC/48kHz 스테레오. 기존 출력 파일은 덮어쓰지 않습니다.
+- 출력: SDR Rec.709 H.264 MP4. **최대 4096×2160(9.4메가픽셀), 23.976/24/25/29.97/30/50/59.94/60fps**, 4–64Mbps. 오디오가 있으면 AAC/48kHz 스테레오. 기존 출력 파일은 덮어쓰지 않습니다.
 - 미리보기와 출력이 같은 Core Image/Core Text 합성기를 사용합니다. 출력 계획은 항상 원본을 참조하며 프록시를 출력하지 않습니다.
 - 원본은 읽기 참조입니다. 프로젝트는 유리수 시간·상대 경로·bookmark와 함께 원자적으로 저장하며 이전 정상 문서는 `.backup`에 보존합니다.
 - 변경 후 1.2초에 별도 복구본을 저장합니다. 복구를 미룬 다른 프로젝트의 복구본도 프로젝트별로 보존합니다. 원본 문서를 자동으로 덮어쓰지 않습니다.
 - 가져온 자료는 파일 참조입니다. ‘프로젝트와 원본 모으기’로 새 폴더에 원본·문서·SHA-256 목록을 수집할 수 있습니다.
 - 계정·서버·외부 API·유료 소재·제품 워터마크가 없습니다. 앱 사용 중 네트워크 업로드를 하지 않습니다. 수집 스크립트는 명시적으로 실행할 때 공개 자료를 다운로드합니다.
-- 4K 출력·30fps 외 출력·HDR 변환·연결 클립·마스크·추적·속도 곡선·멀티캠·고급 믹싱·협업·공개 배포 공증은 미구현입니다.
+- HDR 변환·연결 클립·마스크·추적·속도 곡선·멀티캠·고급 믹싱·협업·공개 배포 공증은 미구현입니다. 4K는 소프트웨어 합성이라 미리보기가 느릴 수 있으니 프록시를 함께 쓰세요.
 
 ## 재현
 
@@ -61,13 +63,14 @@ bash Scripts/test-productivity.sh
 bash Scripts/test-app-productivity.sh Artifacts/Editor-NewRun
 bash Scripts/test-scale.sh Artifacts/Scale-NewRun 300
 bash Scripts/test-live-preview.sh Artifacts/Live-NewRun
+bash Scripts/test-format.sh Artifacts/Format-NewRun
 JHCUT_COMPAT_BUILD="$PWD/Build" JHCUT_COMPAT_USE_EXISTING_CORE=1 bash Scripts/test-compatibility.sh Artifacts/Compatibility-NewRun
 bash Scripts/test-engine.sh Artifacts/EngineUpgrade
 Build/JHCutValidate Artifacts/G0-NewRun
 Build/JHCutValidate --upgrade Artifacts/Upgrade-NewRun
 ```
 
-자동 검사 216개가 통과합니다. `test-scale.sh`는 트랙 패킹과 carrier 재사용을, `test-live-preview.sh`는 라이브 미리보기와 실행취소 1단계를 확인하며 사용자의 복구본을 건드리지 않습니다. 검증은 실제 영상을 생성·출력·재디코딩합니다. 기존 출력 보호를 위해 새 결과 폴더를 지정하세요. `--inspect movie.mp4 [proof-folder]`로 기존 MP4의 코덱·프레임·오디오·샘플 이미지를 검사할 수 있습니다. 완성된 60초/10분 영상과 보고서는 `Artifacts/Upgrade`에 있습니다.
+자동 검사 228개가 통과합니다. `test-scale.sh`는 트랙 패킹과 carrier 재사용을, `test-live-preview.sh`는 라이브 미리보기와 실행취소 1단계를 확인하며 사용자의 복구본을 건드리지 않습니다. 검증은 실제 영상을 생성·출력·재디코딩합니다. 기존 출력 보호를 위해 새 결과 폴더를 지정하세요. `--inspect movie.mp4 [proof-folder]`로 기존 MP4의 코덱·프레임·오디오·샘플 이미지를 검사할 수 있습니다. 완성된 60초/10분 영상과 보고서는 `Artifacts/Upgrade`에 있습니다.
 
 ## 빌드 환경
 

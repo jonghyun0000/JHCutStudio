@@ -119,4 +119,27 @@ public struct FrameRate: Codable, Hashable, Sendable {
         guard numerator > 0, denominator > 0 else { throw DecodingError.dataCorruptedError(forKey: .numerator, in: container, debugDescription: "Frame rate must be positive") }
         self.init(numerator: numerator, denominator: denominator)
     }
+
+    public var fps: Double { Double(numerator) / Double(denominator) }
+    /// True for exact NTSC pulldown rates, whose frame duration is not a round number of seconds.
+    public var isDrop: Bool { denominator == 1001 }
+
+    /// Rates the renderer and exporter are verified against. Anything else is refused rather than
+    /// silently re-timed, because a wrong frame duration desynchronises audio over a long timeline.
+    public static let supportedRenderRates: [FrameRate] = [
+        FrameRate(numerator: 24000, denominator: 1001),
+        FrameRate(numerator: 24, denominator: 1),
+        FrameRate(numerator: 25, denominator: 1),
+        FrameRate(numerator: 30000, denominator: 1001),
+        FrameRate(numerator: 30, denominator: 1),
+        FrameRate(numerator: 50, denominator: 1),
+        FrameRate(numerator: 60000, denominator: 1001),
+        FrameRate(numerator: 60, denominator: 1)
+    ]
+    public var isSupportedRenderRate: Bool { Self.supportedRenderRates.contains(self) }
+
+    /// "23.976" / "30" — the form editors print, not the raw rational.
+    public var label: String {
+        isDrop ? String(format: "%.3f", fps) : String(numerator / denominator)
+    }
 }

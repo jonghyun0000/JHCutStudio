@@ -35,12 +35,14 @@ public enum TimelineRenderer {
         try ProjectValidator.validate(project)
         let sequence = project.sequence
         guard sequence.duration > .zero else { throw MediaEngineError.invalid("타임라인에 클립을 추가하세요.") }
+        // 4096 per axis covers UHD 3840×2160 and DCI 4096×2160. The area bound keeps a pathological
+        // 4096×4096 canvas (16.8MP) out of the CPU compositor, which renders every frame in software.
         guard sequence.width > 0, sequence.height > 0, sequence.width % 2 == 0, sequence.height % 2 == 0,
-              sequence.width <= 1920, sequence.height <= 1920 else {
-            throw MediaEngineError.unsupported("G0는 최대 1920픽셀, 짝수 크기의 SDR 캔버스를 지원합니다.")
+              sequence.width <= 4096, sequence.height <= 4096, sequence.width * sequence.height <= 4096 * 2304 else {
+            throw MediaEngineError.unsupported("캔버스는 축당 최대 4096픽셀, 총 9.4메가픽셀 이하의 짝수 크기여야 합니다.")
         }
-        guard sequence.frameRate.numerator == 30, sequence.frameRate.denominator == 1 else {
-            throw MediaEngineError.unsupported("G0 재생과 출력은 30fps를 지원합니다.")
+        guard sequence.frameRate.isSupportedRenderRate else {
+            throw MediaEngineError.unsupported("지원 프레임레이트는 23.976/24/25/29.97/30/50/59.94/60입니다.")
         }
         guard sequence.colorSpace == "Rec.709" else { throw MediaEngineError.unsupported("G0 색공간은 SDR Rec.709입니다.") }
         let composition = AVMutableComposition()
@@ -243,19 +245,32 @@ private actor BlackCarrier {
     static let shared = BlackCarrier()
     /// Every frame is a keyframe, so the trailing partial repeat cuts exactly on a frame boundary.
     private static let unitFrames = 300
-    private static let version = 1
+    private static let version = 2
     struct Source {
         /// `AVAssetTrack.asset` is weak, so the cache must keep the asset alive alongside the track.
         let asset: AVURLAsset
         let track: AVAssetTrack
         let timeRange: CMTimeRange
     }
-    private var loaded: [Int32: Source] = [:]
+    private var loaded: [String: Source] = [:]
+
+    /// Keyed on the exact rational frame duration, never on rounded fps: 30000/1001 and 30/1 both round
+    /// to 30 and would otherwise share a carrier whose frames sit on the wrong grid.
+    private static func key(for frameDuration: CMTime) -> String {
+        let value = frameDuration.value, scale = Int64(frameDuration.timescale)
+        let divisor = max(1, gcd(abs(value), scale))
+        return "\(value / divisor)-\(scale / divisor)"
+    }
+    private static func gcd(_ a: Int64, _ b: Int64) -> Int64 {
+        var x = a, y = b
+        while y != 0 { (x, y) = (y, x % y) }
+        return x
+    }
 
     func track(frameDuration: CMTime) async throws -> Source {
         let seconds = frameDuration.seconds
         guard frameDuration > .zero, seconds.isFinite, seconds > 0 else { throw MediaEngineError.invalid("프레임 길이가 올바르지 않습니다.") }
-        let key = Int32((1.0 / seconds).rounded())
+        let key = Self.key(for: frameDuration)
         if let cached = loaded[key] { return cached }
         let url = try Self.cachedFile(key: key, frameDuration: frameDuration)
         let asset = AVURLAsset(url: url)
@@ -286,8 +301,8 @@ private actor BlackCarrier {
 
     /// Returns an existing cache entry, otherwise encodes one and publishes it with an atomic rename so
     /// a second process can never observe a partial file.
-    private static func cachedFile(key: Int32, frameDuration: CMTime) throws -> URL {
-        let url = directory().appendingPathComponent("carrier-v\(version)-\(key)fps-\(unitFrames)f.mp4")
+    private static func cachedFile(key: String, frameDuration: CMTime) throws -> URL {
+        let url = directory().appendingPathComponent("carrier-v\(version)-\(key)-\(unitFrames)f.mp4")
         if let size = (try? FileManager.default.attributesOfItem(atPath: url.path)[.size] as? NSNumber)?.intValue, size > 0 {
             return url
         }
