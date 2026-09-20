@@ -1,0 +1,30 @@
+{
+  "runtime": {
+    "project": "ggml-org/whisper.cpp",
+    "version": "v1.9.4",
+    "commit": "927cfce34f31707e17f2bff35c349632fb9e2c3a",
+    "sourceURL": "https://api.github.com/repos/ggml-org/whisper.cpp/tarball/v1.9.4",
+    "sourceArchiveSHA256": "261de3e2edeb7b3fa8bd3b35d000848fb023933ca220bf4d15937e31f8992ec8",
+    "license": "MIT",
+    "architecture": "arm64",
+    "deploymentTarget": "macOS 14",
+    "backend": "CPU + Apple Accelerate; Metal disabled; static ggml/whisper; no curl backend",
+    "buildType": "Release",
+    "cmake": "4.1.3",
+    "binaryBytes": 2518344,
+    "unsignedBinarySHA256": "4fa74953727faadbff4e49e1a828e96e05942ba87e31d14a9675de74a783070e"
+  },
+  "model": {
+    "name": "Whisper base multilingual (Korean)",
+    "fileName": "ggml-base.bin",
+    "byteCount": 147951465,
+    "sha256": "60ed5bc3dd14eea856493d334349b405782ddcaf0028d4b5df4088345fba2efe",
+    "downloadURL": "https://huggingface.co/ggerganov/whisper.cpp/resolve/5359861c739e955e79d9a303bcbc70fb988958b1/ggml-base.bin",
+    "license": "MIT",
+    "licenseURL": "https://github.com/openai/whisper/blob/main/LICENSE",
+    "installRequiresExplicitUserApproval": true,
+    "bundled": false,
+    "recommendedFreeBytes": 400000000,
+    "upstreamApproximateRAMMB": 388
+  }
+}

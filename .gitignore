@@ -1,0 +1,18 @@
+# Build output and generated evidence. Scripts/build.sh and the probes recreate these.
+.build/
+Build/
+Build-old/
+Artifacts/
+*.dSYM/
+
+# Manual pre-git snapshots. Backups/pre-0.3 is a 97MB built .app; git supersedes both.
+# The directory stays on disk untracked — delete it by hand once this history is trusted.
+Backups/
+
+# Editor/document safety copies written next to real files.
+*.jhcut.backup
+*.partial.mp4
+
+# macOS metadata. exFAT volumes accumulate AppleDouble sidecars.
+.DS_Store
+._*

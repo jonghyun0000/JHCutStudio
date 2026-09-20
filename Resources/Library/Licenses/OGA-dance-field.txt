@@ -1,0 +1,8 @@
+Title: dance-field
+Author: Centurion_of_war
+Source: https://opengameart.org/content/dance-field
+License: CC0 1.0
+License URL: https://creativecommons.org/publicdomain/zero/1.0/
+Download: https://opengameart.org/sites/default/files/dance_field_2_1.mp3
+Reviewed: 2026-09-20
+No preview images or unrelated page assets are redistributed.
