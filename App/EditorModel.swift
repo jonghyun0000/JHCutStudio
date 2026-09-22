@@ -7,7 +7,10 @@ import JHCutCore
 
 @MainActor
 final class EditorModel: ObservableObject {
-    @Published var history = EditorHistory(project: Project())
+    @Published var history = EditorHistory(project: Project()) {
+        didSet { encodedProject = nil }
+    }
+    private var encodedProject: Data?
     @Published var selectedClipID: UUID?
     @Published var selectedClipIDs: Set<UUID> = []
     @Published var selectedAssetID: UUID?
@@ -60,6 +63,10 @@ final class EditorModel: ObservableObject {
     @Published var analyzedProjectID: UUID?
     @Published var transcriptionReady = false
     @Published var transcriptionStatus = "모델 설치 상태 확인 중"
+    @Published var transcriptionActive = false
+    @Published var transcriptionProgress: Double?
+    @Published var transcriptionPresetID = TitlePreset.builtIns[0].id
+    var transcriptionJobID: UUID?
     @Published var timelineScrollY = 0.0
     @Published var safeAreaVisible = false
     @Published var outputBitRate = 8_000_000
@@ -67,6 +74,7 @@ final class EditorModel: ObservableObject {
     var busyDocument: Bool { isExporting || isImporting || productivityBusy || proxyBusy }
 
     private var observer: Any?
+    private var playbackObservers: [NSObjectProtocol] = []
     private var keyMonitor: Any?
     private var menuTrackingCount = 0
     private var menuObservers: [NSObjectProtocol] = []
@@ -84,7 +92,12 @@ final class EditorModel: ObservableObject {
     }
     var captionClips: [Clip] { project.sequence.tracks.filter { $0.kind == .title }.flatMap(\.clips).sorted { $0.start < $1.start } }
     var allTitlePresets: [TitlePreset] { userTitlePresets + TitlePreset.builtIns }
-    private func projectData() -> Data? { let encoder = JSONEncoder(); encoder.outputFormatting = [.sortedKeys]; return try? encoder.encode(project) }
+    private func projectData() -> Data? {
+        if let encodedProject { return encodedProject }
+        let encoder = JSONEncoder(); encoder.outputFormatting = [.sortedKeys]
+        encodedProject = try? encoder.encode(project)
+        return encodedProject
+    }
     var dirty: Bool { projectData() != savedData }
     var selected: (Track, Clip)? {
         for track in project.sequence.tracks {
@@ -100,11 +113,27 @@ final class EditorModel: ObservableObject {
         if let data = try? Data(contentsOf: Self.presetsURL), let presets = try? JSONDecoder().decode([TitlePreset].self, from: data) { userTitlePresets = presets }
         refreshTranscriptionStatus()
         player.actionAtItemEnd = .pause
-        observer = player.addPeriodicTimeObserver(forInterval: CMTime(value: 1, timescale: 60), queue: .main) { [weak self] time in
-            Task { @MainActor in
+        observer = player.addPeriodicTimeObserver(forInterval: CMTime(value: 1, timescale: 30), queue: .main) { [weak self] time in
+            MainActor.assumeIsolated {
                 guard let self else { return }
-                if self.player.rate != 0 { self.playhead = time.seconds }
-                self.playing = self.player.rate != 0
+                // `rate == 0` also means buffering. It must never erase a pending play request.
+                if self.playing, time.seconds.isFinite, abs(self.playhead - time.seconds) > 0.001 {
+                    self.playhead = time.seconds
+                }
+            }
+        }
+        // The committed HEAD version never observed end-of-item at all, so `playing` stayed true
+        // forever after natural completion; the next click then hit the `rate != 0` branch's `else`
+        // and replayed from the start instead of the pause the user pressed.
+        playbackObservers = [AVPlayerItem.didPlayToEndTimeNotification, AVPlayerItem.failedToPlayToEndTimeNotification].map { name in
+            NotificationCenter.default.addObserver(forName: name, object: nil, queue: .main) { [weak self] notification in
+                MainActor.assumeIsolated {
+                    guard let self, let item = notification.object as? AVPlayerItem, item === self.player.currentItem else { return }
+                    self.pausePlayback()
+                    if name == AVPlayerItem.failedToPlayToEndTimeNotification {
+                        self.error = item.error?.localizedDescription ?? "미리보기 재생에 실패했습니다."
+                    }
+                }
             }
         }
         menuObservers = [
@@ -128,7 +157,8 @@ final class EditorModel: ObservableObject {
             }
             if event.modifierFlags.intersection([.command, .control, .option]).isEmpty {
                 switch event.keyCode {
-                case 49: self.togglePlay(); return nil
+                case 49: if !event.isARepeat { self.togglePlay() }; return nil
+                case 53: self.pausePlayback(); self.stopAudition(); return nil
                 case 123: self.seek(self.playhead - self.frameStep); return nil
                 case 124: self.seek(self.playhead + self.frameStep); return nil
                 case 51, 117: self.remove(); return nil
@@ -158,10 +188,25 @@ final class EditorModel: ObservableObject {
         player.seek(to: time.cmTime, toleranceBefore: .zero, toleranceAfter: .zero)
     }
     func togglePlay() {
+        // Pausing always wins, including while the item is waiting for data or rebuilding. The
+        // committed HEAD version checked `isBuilding`/`isExporting` before this and used a bare
+        // `player.rate != 0` test, so a click during a rebuild, or during the brief rate==0 window
+        // AVPlayer reports while buffering mid-playback, silently did nothing or replayed instead of
+        // pausing — exactly the "pause button doesn't stop the video" report.
+        if playing || player.rate != 0 || player.timeControlStatus == .waitingToPlayAtSpecifiedRate {
+            pausePlayback(); return
+        }
         guard !isBuilding, !isExporting, plan != nil else { return }
         stopAudition()
-        if player.rate != 0 { player.pause(); playing = false }
-        else { if playhead >= project.sequence.duration.seconds - frameStep { seek(0) }; player.play(); playing = true }
+        if playhead >= project.sequence.duration.seconds - frameStep { seek(0) }
+        playing = true
+        player.play()
+    }
+    func pausePlayback() {
+        player.pause()
+        playing = false
+        let seconds = player.currentTime().seconds
+        if seconds.isFinite { playhead = max(0, min(project.sequence.duration.seconds, seconds)) }
     }
     func rebuild() {
         buildTask?.cancel(); buildGeneration += 1
@@ -220,7 +265,7 @@ final class EditorModel: ObservableObject {
     }
     func beginLiveEdit() {
         guard !isExporting, !busyDocument else { return }
-        if player.rate != 0 { player.pause(); playing = false }
+        if playing || player.rate != 0 { pausePlayback() }
         // Proxy verification hits the cache directory, so it is resolved once per gesture.
         liveOverrides = proxyEnabled ? proxyURLs : [:]
     }
@@ -450,6 +495,8 @@ final class EditorModel: ObservableObject {
                 var clip = Clip(name: item.name, assetID: asset.id, start: insertion, duration: length, volume: item.category == .music ? 0.25 : 0.7)
                 if item.category == .music { let fade = min(MediaTime(1, 1), MediaTime(seconds: length.seconds / 4)); clip.audioFadeIn = fade; clip.audioFadeOut = fade }
                 if item.category == .overlay { clip.transform.scale = 0.75 }
+                if item.tags.contains("픽셀 아트") { clip.transform.scale = 0.2 }
+                if item.category == .background || item.category == .texture { clip.transform.fill = true }
                 if perform(.batch([.addAsset(asset), .addClip(trackID: track.id, clip: clip)])) {
                     selectClip(clip.id); message = "\(item.name) 추가 · \(item.license) · \(item.author)"
                 }

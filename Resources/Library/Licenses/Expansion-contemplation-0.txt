@@ -1,0 +1,8 @@
+Author: Joth
+Source: https://opengameart.org/content/contemplation-0
+Download: https://opengameart.org/sites/default/files/Contemplation.mp3
+Source archive/file SHA256: 283962d3a975c93613c46cda30c9f0816176ae3e2899f961591a49e2d41b4bf3
+License: CC0 1.0
+License URL: https://creativecommons.org/publicdomain/zero/1.0/
+Reviewed: 2026-09-20
+Whole original track. No looping, stretching, or trimming. OGG decoded to PCM WAV when required.

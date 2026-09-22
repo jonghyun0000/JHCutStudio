@@ -12,13 +12,17 @@ struct LibraryBrowser: View {
     @State private var favoritesOnly = false
     @AppStorage("libraryFavoriteIDs") private var favoriteIDs = ""
     private var favorites: Set<String> { Set(favoriteIDs.split(separator: "|").map(String.init)) }
-    private var categories: [String] { audioOnly ? ["전체", "효과음", "배경음"] : ["전체", "오버레이", "배경", "텍스처"] }
+    private var categories: [String] { audioOnly ? ["전체", "2~3분 배경음", "배경음", "효과음"] : ["전체", "오버레이", "배경", "텍스처"] }
     private var filtered: [LibraryAsset] {
         (model.bundledLibrary?.assets ?? []).filter { asset in
             let isAudio = asset.category == .sfx || asset.category == .music
-            let matchesCategory = category == "전체" || asset.category.korean == category
+            let matchesCategory = category == "전체" || asset.category.korean == category ||
+                (category == "2~3분 배경음" && asset.category == .music && (120...180).contains(asset.duration ?? 0))
             let haystack = ([asset.name, asset.author] + asset.tags).joined(separator: " ")
             return isAudio == audioOnly && matchesCategory && (!favoritesOnly || favorites.contains(asset.id)) && (query.isEmpty || haystack.localizedCaseInsensitiveContains(query))
+        }.sorted { left, right in
+            if audioOnly && left.category != right.category { return left.category == .music }
+            return left.name.localizedStandardCompare(right.name) == .orderedAscending
         }
     }
     var body: some View {
@@ -74,8 +78,11 @@ struct LibraryBrowser: View {
             .clipShape(RoundedRectangle(cornerRadius: JH.Radius.chip, style: .continuous)).contentShape(Rectangle()).onTapGesture { selected = asset.id }
     }
     private func subtitle(_ asset: LibraryAsset) -> String {
-        let time = asset.duration.map { String(format: "%.1f초 · ", $0) } ?? ""
-        return time + asset.category.korean + " · " + asset.license
+        let time = asset.duration.map { seconds in
+            seconds >= 60 ? String(format: "%d:%02d · ", Int(seconds) / 60, Int(seconds) % 60) : String(format: "%.1f초 · ", seconds)
+        } ?? ""
+        let resolution = asset.width.flatMap { width in asset.height.map { "\(width)×\($0) · " } } ?? ""
+        return (audioOnly ? time : resolution) + asset.category.korean + " · " + asset.license
     }
     private func details(_ asset: LibraryAsset) -> some View {
         VStack(alignment: .leading, spacing: 7) {

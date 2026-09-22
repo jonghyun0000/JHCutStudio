@@ -1,0 +1,8 @@
+Author: Kenney
+Source: https://kenney.nl/assets/pattern-pack
+Download: https://kenney.nl/media/pages/assets/pattern-pack/e787377a73-1721940715/kenney_pattern-pack.zip
+Source archive/file SHA256: 903051a40a0d9a62de5e87b03992a7084305453806102d1e7b9d13c210be93ac
+License: CC0 1.0
+License URL: https://creativecommons.org/publicdomain/zero/1.0/
+Reviewed: 2026-09-20
+Selected PNG files converted to explicit 8-bit sRGB RGBA at original dimensions. Source file hashes retained. Duplicate style/rotation variants omitted. Emotes are labeled pixel art at original resolution.

@@ -1,0 +1,8 @@
+Author: Kenney
+Source: https://kenney.nl/assets/particle-pack
+Download: https://kenney.nl/media/pages/assets/particle-pack/f8fe0f8cb8-1677578741/kenney_particle-pack.zip
+Source archive/file SHA256: b631d4b07f7002549fdcf155f01141ad482f79f3440e4e301eed49ce5f1d8958
+License: CC0 1.0
+License URL: https://creativecommons.org/publicdomain/zero/1.0/
+Reviewed: 2026-09-20
+Selected PNG files converted to explicit 8-bit sRGB RGBA at original dimensions. Source file hashes retained. Duplicate style/rotation variants omitted. Emotes are labeled pixel art at original resolution.

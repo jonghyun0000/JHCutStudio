@@ -273,6 +273,7 @@ struct EditorView: View {
                 Button { model.togglePlay() } label: {
                     Image(systemName: model.playing ? "pause.circle.fill" : "play.circle.fill")
                         .font(.system(size: 30)).foregroundStyle(JH.Palette.accent)
+                        .frame(width: 44, height: 44).contentShape(Rectangle())
                 }
                 .jhIconLabel(model.playing ? "일시정지" : "재생", hint: "스페이스바")
                 Button { model.seek(model.playhead + model.frameStep) } label: { Image(systemName: "forward.frame.fill") }
@@ -290,7 +291,7 @@ struct EditorView: View {
         .padding(.vertical, JH.Space.s)
         .jhSurface(.floating, in: Capsule(), interactive: true)
         .padding(.vertical, JH.Space.m)
-        .disabled(model.isBuilding || model.isExporting)
+        .disabled(!model.playing && (model.isBuilding || model.isExporting))
         .accessibilityElement(children: .contain)
         .accessibilityLabel(Text("재생 컨트롤"))
     }
@@ -487,7 +488,7 @@ struct EditorView: View {
                 Text(model.message).lineLimit(1)
             }
             Spacer()
-            Text("JH CUT STUDIO 0.3 · 로컬 편집").font(JH.Font.micro).foregroundStyle(.tertiary)
+            Text("JH CUT STUDIO \(Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "개발 빌드") · 로컬 편집").font(JH.Font.micro).foregroundStyle(.tertiary)
         }
         .font(JH.Font.caption)
         .padding(.horizontal, JH.Space.l)
@@ -540,7 +541,9 @@ struct PlayerSurface: NSViewRepresentable {
         let view = AVPlayerView(); view.controlsStyle = .none; view.videoGravity = .resizeAspect; view.player = player
         return view
     }
-    func updateNSView(_ view: AVPlayerView, context: Context) { view.player = player }
+    func updateNSView(_ view: AVPlayerView, context: Context) {
+        if view.player !== player { view.player = player }
+    }
 }
 
 struct MediaRow: View {

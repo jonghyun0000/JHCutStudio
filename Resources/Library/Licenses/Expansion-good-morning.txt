@@ -1,0 +1,8 @@
+Author: Cakeflaps / You're Perfect Studio
+Source: https://opengameart.org/content/good-morning
+Download: https://opengameart.org/sites/default/files/Cakeflaps%20-%20Good%20Morning.wav
+Source archive/file SHA256: 1ad4e34b6847f0bb6e870d2b414d1bd81692814948e3d63c3f7f74533d80de3a
+License: CC0 1.0
+License URL: https://creativecommons.org/publicdomain/zero/1.0/
+Reviewed: 2026-09-20
+Whole original track. No looping, stretching, or trimming. OGG decoded to PCM WAV when required.

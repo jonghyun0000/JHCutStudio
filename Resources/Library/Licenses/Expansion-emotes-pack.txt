@@ -1,0 +1,8 @@
+Author: Kenney
+Source: https://kenney.nl/assets/emotes-pack
+Download: https://kenney.nl/media/pages/assets/emotes-pack/d00a3dcb06-1677578798/kenney_emotes-pack.zip
+Source archive/file SHA256: 96ab3f2c92d7acd860942efca1c9f1295184b11d3db5c79c28da82036e496526
+License: CC0 1.0
+License URL: https://creativecommons.org/publicdomain/zero/1.0/
+Reviewed: 2026-09-20
+Selected PNG files converted to explicit 8-bit sRGB RGBA at original dimensions. Source file hashes retained. Duplicate style/rotation variants omitted. Emotes are labeled pixel art at original resolution.

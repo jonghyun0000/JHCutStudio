@@ -1,0 +1,8 @@
+Author: Alex McCulloch (Pro Sensory)
+Source: https://opengameart.org/content/sunny-side-up-updated-version
+Download: https://opengameart.org/sites/default/files/sunny_side_up_updated_version_0.mp3
+Source archive/file SHA256: 0fb78a3bba26e8bf4be72b4ae8eab335a8a2dfe4ea2a8f9631e438e94b07625d
+License: CC0 1.0
+License URL: https://creativecommons.org/publicdomain/zero/1.0/
+Reviewed: 2026-09-20
+Whole original track. No looping, stretching, or trimming. OGG decoded to PCM WAV when required.

@@ -15,6 +15,16 @@ extension EditorModel {
         guard let (track, clip) = selected, let asset = project.assets.first(where: { $0.id == clip.assetID }), asset.kind == .audio || asset.hasAudio else { return nil }
         return (track, clip, asset)
     }
+    var selectedSpeechClips: [(Track, Clip, MediaAsset)] {
+        let ids = selectedClipIDs.isEmpty ? Set([selectedClipID].compactMap { $0 }) : selectedClipIDs
+        return project.sequence.tracks.flatMap { track in
+            track.clips.compactMap { clip -> (Track, Clip, MediaAsset)? in
+                guard ids.contains(clip.id), let asset = project.assets.first(where: { $0.id == clip.assetID }),
+                      asset.supported, asset.kind == .audio || asset.hasAudio else { return nil }
+                return (track, clip, asset)
+            }
+        }.sorted { $0.1.start < $1.1.start }
+    }
     func analyzeSound() {
         guard !busyDocument, let (_, clip, asset) = selectedSound else { return }
         let url = asset.resolvedURL(relativeTo: mediaBaseURL), projectID = project.id
@@ -57,24 +67,55 @@ extension EditorModel {
         seek((clip.start + local).seconds)
     }
     func transcribeSelection() {
-        guard !busyDocument, transcriptionReady, let (_, clip, asset) = selectedSound else { return }
-        let snapshot = project, url = asset.resolvedURL(relativeTo: mediaBaseURL)
-        productivityBusy = true; productivityStatus = "한국어 음성을 로컬에서 인식 중…"
+        let sources = selectedSpeechClips
+        guard !busyDocument, transcriptionReady, !sources.isEmpty else { return }
+        let snapshot = project, base = mediaBaseURL, jobID = UUID()
+        var style = allTitlePresets.first(where: { $0.id == transcriptionPresetID })?.title ?? TitlePreset.builtIns[0].title
+        // Built-in styles are authored at a 1080px short edge. Keep captions legible and
+        // inside the canvas when generating for small landscape or larger 4K sequences.
+        if TitlePreset.builtIns.contains(where: { $0.id == transcriptionPresetID }) {
+            let scale = Double(min(snapshot.sequence.width, snapshot.sequence.height)) / 1080
+            style.fontSize *= scale
+            style.style?.strokeWidth *= scale
+            style.style?.padding *= scale
+            style.style?.lineSpacing *= scale
+        }
+        pausePlayback(); stopAudition(); error = nil
+        productivityBusy = true; transcriptionActive = true; transcriptionProgress = 0; transcriptionJobID = jobID
+        productivityStatus = "한국어 음성을 로컬에서 인식 중…"
         productivityTask = Task {
-            defer { productivityBusy = false; productivityTask = nil }
+            defer { productivityBusy = false; transcriptionActive = false; transcriptionJobID = nil; productivityTask = nil }
             do {
-                let result = try await LocalTranscription.transcribe(url: url, sourceStart: clip.sourceStart, duration: clip.sourceDuration)
+                let begun = Date()
+                var tracks: [Track] = []
+                for (index, entry) in sources.enumerated() {
+                    try Task.checkCancellation()
+                    let (_, clip, asset) = entry
+                    productivityStatus = "\(index + 1)/\(sources.count) · \(clip.name) 음성 인식 중…"
+                    let result = try await LocalTranscription.transcribe(url: asset.resolvedURL(relativeTo: base), sourceStart: clip.sourceStart, duration: clip.sourceDuration) { [weak self] fraction in
+                        Task { @MainActor in
+                            guard let self, self.transcriptionJobID == jobID else { return }
+                            if let fraction { self.transcriptionProgress = (Double(index) + fraction) / Double(sources.count) }
+                        }
+                    }
+                    var track = Track(name: "자동 자막 · \(clip.name)", kind: .title)
+                    track.clips = CaptionEditing.automaticClips(cues: result.cues, source: clip, style: style)
+                    if !track.clips.isEmpty { tracks.append(track) }
+                }
                 try Task.checkCancellation()
                 guard project == snapshot else { throw ProjectError("인식 중 프로젝트가 변경되었습니다. 자막을 잘못된 위치에 넣지 않도록 중단했습니다. 다시 실행하세요.") }
-                guard !result.cues.isEmpty else { throw ProjectError("인식된 자막이 없습니다. 대사가 있는 구간을 선택하세요.") }
-                var track = Track(name: "자동 자막 · 한국어", kind: .title)
-                let rate = clip.playbackRate ?? PlaybackRate()
-                track.clips = result.cues.map { cue in
-                    var title = TitlePreset.builtIns[0].title; title.text = cue.text
-                    return Clip(name: "한국어 자막", start: clip.start + rate.timelineDuration(for: cue.start - clip.sourceStart), duration: rate.timelineDuration(for: cue.duration), title: title)
+                guard !tracks.isEmpty else { throw ProjectError("인식된 자막이 없습니다. 대사가 있는 구간을 선택하세요.") }
+                if perform(.batch(tracks.map(EditCommand.addTrack))) {
+                    transcriptionProgress = 1
+                    if let first = tracks.first?.clips.first { selectClip(first.id); seek(first.start.seconds) }
+                    productivityStatus = "자막 \(tracks.reduce(0) { $0 + $1.clips.count })개 생성 · \(String(format: "%.1f", Date().timeIntervalSince(begun)))초 소요"
+                    message = productivityStatus + " · 문구와 시간을 검토하세요. ⌘Z로 한 번에 되돌릴 수 있습니다."
                 }
-                if perform(.addTrack(track)) { message = "한국어 자막 \(track.clips.count)개 생성 · \(String(format: "%.1f", result.elapsedSeconds))초 소요 · 문구와 시간을 검토하세요." }
-            } catch { if Task.isCancelled { message = "음성 인식 취소됨" } else { self.error = error.localizedDescription } }
+            } catch {
+                transcriptionProgress = nil
+                if Task.isCancelled { message = "음성 인식 취소됨 · 기존 자막은 유지됩니다."; productivityStatus = message }
+                else { self.error = error.localizedDescription; productivityStatus = "자막 생성 실패 · 다시 시도할 수 있습니다." }
+            }
         }
     }
     func installSpeechModel() {

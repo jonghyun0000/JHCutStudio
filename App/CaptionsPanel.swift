@@ -3,7 +3,7 @@ import JHCutCore
 
 struct CaptionsPanel: View {
     @ObservedObject var model: EditorModel
-    @State private var mode = "스타일"
+    @State private var mode = "자동 자막"
     @State private var query = ""
     @State private var allCaptions = false
     @State private var offset = "0"
@@ -17,11 +17,14 @@ struct CaptionsPanel: View {
                 Button("SRT 가져오기") { model.importSRT() }
                 Button("SRT 저장") { model.exportSRT() }.disabled(model.captionClips.isEmpty)
             }.buttonStyle(.jhTool).font(JH.Font.caption)
-            Picker("보기", selection: $mode) { Text("스타일").tag("스타일"); Text("자막 목록").tag("자막 목록") }
+            Picker("보기", selection: $mode) { Text("자동 자막").tag("자동 자막"); Text("스타일").tag("스타일"); Text("자막 목록").tag("자막 목록") }
                 .pickerStyle(.segmented).labelsHidden().controlSize(.small)
-            TextField(mode == "스타일" ? "스타일 검색" : "자막 문구 검색", text: $query).textFieldStyle(.roundedBorder)
+            if mode != "자동 자막" { TextField(mode == "스타일" ? "스타일 검색" : "자막 문구 검색", text: $query).textFieldStyle(.roundedBorder)
                 .accessibilityLabel(Text(mode == "스타일" ? "스타일 검색" : "자막 문구 검색"))
-            if mode == "스타일" {
+            }
+            if mode == "자동 자막" {
+                ScrollView { SpeechTools(model: model).padding(.vertical, 8) }
+            } else if mode == "스타일" {
                 Toggle("모든 제목·자막에 스타일 적용", isOn: $allCaptions).font(JH.Font.caption)
                 ScrollView {
                     LazyVGrid(columns: [GridItem(.flexible()), GridItem(.flexible())], spacing: 10) {
@@ -69,12 +72,13 @@ struct CaptionsPanel: View {
                 if !captionWarnings.isEmpty { Text(captionWarnings).font(JH.Font.micro).foregroundStyle(JH.Palette.warning) }
                 Text("문구·시간은 오른쪽 속성에서 수정합니다. 문구 수정은 영상을 자르지 않습니다.").font(JH.Font.caption).foregroundStyle(.secondary)
             }
-            Divider()
-            SpeechTools(model: model).padding(.bottom, 10)
         }.padding(.horizontal, 12)
             .onAppear { updateWarnings() }
             .onChange(of: model.captionClips) { updateWarnings() }
             .onChange(of: model.project.sequence.width) { updateWarnings() }
+            .onChange(of: model.transcriptionActive) { _, active in
+                if !active, model.transcriptionProgress == 1 { mode = "자막 목록"; query = "" }
+            }
     }
     private func updateWarnings() {
         let clips = model.captionClips

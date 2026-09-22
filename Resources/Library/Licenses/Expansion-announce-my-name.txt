@@ -1,0 +1,8 @@
+Author: Alex McCulloch (Pro Sensory)
+Source: https://opengameart.org/content/announce-my-name
+Download: https://opengameart.org/sites/default/files/AnnounceMyName_0.wav
+Source archive/file SHA256: a22c2cd92485cc9a8f9d3b95288aae6ccf9c9a6b74a4cc53f760e22b4bd7190e
+License: CC0 1.0
+License URL: https://creativecommons.org/publicdomain/zero/1.0/
+Reviewed: 2026-09-20
+Whole original track. No looping, stretching, or trimming. OGG decoded to PCM WAV when required.

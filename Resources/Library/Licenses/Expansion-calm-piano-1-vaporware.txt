@@ -1,0 +1,8 @@
+Author: cynicmusic
+Source: https://opengameart.org/content/calm-piano-1-vaporware
+Download: https://opengameart.org/sites/default/files/003_Vaporware_2.mp3
+Source archive/file SHA256: 1697fa1b7ed6f3fe1eca4daa4f9d1a2eb3db8fe40a0f3c283529ab47e57b5b38
+License: CC0 1.0
+License URL: https://creativecommons.org/publicdomain/zero/1.0/
+Reviewed: 2026-09-20
+Whole original track. No looping, stretching, or trimming. OGG decoded to PCM WAV when required.

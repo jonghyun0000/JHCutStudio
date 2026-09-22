@@ -1,0 +1,187 @@
+{
+  "music": [
+    {
+      "slug": "lofi-hip-hop-loop",
+      "name": "카페 로파이 · 힙합",
+      "tags": [
+        "로파이",
+        "힙합",
+        "카페",
+        "브이로그",
+        "잔잔함"
+      ],
+      "author": "omfgdude",
+      "sourceURL": "https://opengameart.org/content/lofi-hip-hop-loop",
+      "downloadURL": "https://opengameart.org/sites/default/files/LofiLoop_2.ogg",
+      "cacheName": "lofi-hip-hop-loop.ogg",
+      "sourceSHA256": "e57ba821d4db8d66783ca984a2778ec68d1439e862239ec36407344ef3bd1eab"
+    },
+    {
+      "slug": "slow-stride",
+      "name": "느린 산책 · 칠아웃",
+      "tags": [
+        "칠아웃",
+        "휴식",
+        "잔잔함",
+        "브이로그"
+      ],
+      "author": "isaiah658",
+      "sourceURL": "https://opengameart.org/content/slow-stride",
+      "downloadURL": "https://opengameart.org/sites/default/files/Slow%20Stride%20Loop_0.ogg",
+      "cacheName": "slow-stride.ogg",
+      "sourceSHA256": "0f2a2217a950f79eb8f41322ecc78e0cf339004968d9f8ebd308a666dc8ca946"
+    },
+    {
+      "slug": "one-step-at-a-time",
+      "name": "한 걸음씩 · 재즈",
+      "tags": [
+        "재즈",
+        "카페",
+        "일상"
+      ],
+      "author": "Alex McCulloch (Pro Sensory)",
+      "sourceURL": "https://opengameart.org/content/one-step-at-a-time",
+      "downloadURL": "https://opengameart.org/sites/default/files/OneStepAtATIme.wav",
+      "cacheName": "one-step-at-a-time.wav",
+      "sourceSHA256": "351f4c04d435090d50c1a2c33de2e82a9ebea70242aa6a763486ae485d239daf"
+    },
+    {
+      "slug": "serenade-guitar",
+      "name": "세레나데 · 기타 재즈",
+      "tags": [
+        "기타",
+        "재즈",
+        "감성",
+        "브이로그"
+      ],
+      "author": "Alex McCulloch (Pro Sensory)",
+      "sourceURL": "https://opengameart.org/content/serenade-guitar",
+      "downloadURL": "https://opengameart.org/sites/default/files/Serenade.wav",
+      "cacheName": "serenade-guitar.wav",
+      "sourceSHA256": "4488ce8a1ca7752909a18c3b9a7554ae19ce9829914eb08a43821cfba87e81b6"
+    },
+    {
+      "slug": "good-morning",
+      "name": "좋은 아침 · 귀여운 리듬",
+      "tags": [
+        "귀여움",
+        "아침",
+        "일상"
+      ],
+      "author": "Cakeflaps / You're Perfect Studio",
+      "sourceURL": "https://opengameart.org/content/good-morning",
+      "downloadURL": "https://opengameart.org/sites/default/files/Cakeflaps%20-%20Good%20Morning.wav",
+      "cacheName": "good-morning.wav",
+      "sourceSHA256": "1ad4e34b6847f0bb6e870d2b414d1bd81692814948e3d63c3f7f74533d80de3a"
+    },
+    {
+      "slug": "richer",
+      "name": "느긋한 여행 · 웨스턴 재즈",
+      "tags": [
+        "기타",
+        "재즈",
+        "여행",
+        "웨스턴"
+      ],
+      "author": "Alex McCulloch (Pro Sensory)",
+      "sourceURL": "https://opengameart.org/content/richer",
+      "downloadURL": "https://opengameart.org/sites/default/files/Richer%20than%20me.wav",
+      "cacheName": "richer.wav",
+      "sourceSHA256": "4b01f3cbf18f3f92908de3b233cb9173a09b2b3f3519a339de28cab4b18244f9"
+    },
+    {
+      "slug": "announce-my-name",
+      "name": "이름을 불러줘 · 클라리넷",
+      "tags": [
+        "클라리넷",
+        "가벼움",
+        "일상"
+      ],
+      "author": "Alex McCulloch (Pro Sensory)",
+      "sourceURL": "https://opengameart.org/content/announce-my-name",
+      "downloadURL": "https://opengameart.org/sites/default/files/AnnounceMyName_0.wav",
+      "cacheName": "announce-my-name.wav",
+      "sourceSHA256": "a22c2cd92485cc9a8f9d3b95288aae6ccf9c9a6b74a4cc53f760e22b4bd7190e"
+    },
+    {
+      "slug": "contemplation-0",
+      "name": "사색 · 앰비언트",
+      "tags": [
+        "앰비언트",
+        "감성",
+        "차분함",
+        "배경"
+      ],
+      "author": "Joth",
+      "sourceURL": "https://opengameart.org/content/contemplation-0",
+      "downloadURL": "https://opengameart.org/sites/default/files/Contemplation.mp3",
+      "cacheName": "contemplation-0.mp3",
+      "sourceSHA256": "283962d3a975c93613c46cda30c9f0816176ae3e2899f961591a49e2d41b4bf3"
+    },
+    {
+      "slug": "calm-piano-1-vaporware",
+      "name": "고요한 피아노 · Vaporware",
+      "tags": [
+        "피아노",
+        "감성",
+        "휴식",
+        "잔잔함"
+      ],
+      "author": "cynicmusic",
+      "sourceURL": "https://opengameart.org/content/calm-piano-1-vaporware",
+      "downloadURL": "https://opengameart.org/sites/default/files/003_Vaporware_2.mp3",
+      "cacheName": "calm-piano-1-vaporware.mp3",
+      "sourceSHA256": "1697fa1b7ed6f3fe1eca4daa4f9d1a2eb3db8fe40a0f3c283529ab47e57b5b38"
+    },
+    {
+      "slug": "sunny-side-up-updated-version",
+      "name": "햇살 좋은 날 · 포크",
+      "tags": [
+        "밝음",
+        "포크",
+        "컨트리",
+        "여행"
+      ],
+      "author": "Alex McCulloch (Pro Sensory)",
+      "sourceURL": "https://opengameart.org/content/sunny-side-up-updated-version",
+      "downloadURL": "https://opengameart.org/sites/default/files/sunny_side_up_updated_version_0.mp3",
+      "cacheName": "sunny-side-up-updated-version.mp3",
+      "sourceSHA256": "0fb78a3bba26e8bf4be72b4ae8eab335a8a2dfe4ea2a8f9631e438e94b07625d"
+    },
+    {
+      "slug": "chilly-bells",
+      "name": "차가운 종소리 · 칠",
+      "tags": [
+        "칠",
+        "휴식",
+        "감성",
+        "벨"
+      ],
+      "author": "Alex McCulloch (Pro Sensory)",
+      "sourceURL": "https://opengameart.org/content/chilly-bells",
+      "downloadURL": "https://opengameart.org/sites/default/files/chilly_bells_2.wav",
+      "cacheName": "chilly-bells.wav",
+      "sourceSHA256": "50a464b5e5197e9beeac38dffb12932b17a335bdde64adb3a802c539310e215e"
+    }
+  ],
+  "packs": [
+    {
+      "slug": "particle-pack",
+      "downloadURL": "https://kenney.nl/media/pages/assets/particle-pack/f8fe0f8cb8-1677578741/kenney_particle-pack.zip",
+      "sourceURL": "https://kenney.nl/assets/particle-pack",
+      "sourceSHA256": "b631d4b07f7002549fdcf155f01141ad482f79f3440e4e301eed49ce5f1d8958"
+    },
+    {
+      "slug": "emotes-pack",
+      "downloadURL": "https://kenney.nl/media/pages/assets/emotes-pack/d00a3dcb06-1677578798/kenney_emotes-pack.zip",
+      "sourceURL": "https://kenney.nl/assets/emotes-pack",
+      "sourceSHA256": "96ab3f2c92d7acd860942efca1c9f1295184b11d3db5c79c28da82036e496526"
+    },
+    {
+      "slug": "pattern-pack",
+      "downloadURL": "https://kenney.nl/media/pages/assets/pattern-pack/e787377a73-1721940715/kenney_pattern-pack.zip",
+      "sourceURL": "https://kenney.nl/assets/pattern-pack",
+      "sourceSHA256": "903051a40a0d9a62de5e87b03992a7084305453806102d1e7b9d13c210be93ac"
+    }
+  ]
+}

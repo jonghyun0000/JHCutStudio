@@ -29,6 +29,8 @@ mkdir -p "$bundle/Contents/MacOS" "$bundle/Contents/Frameworks" "$bundle/Content
 cp Build/JHCutStudio "$bundle/Contents/MacOS/JHCutStudio"
 cp Build/libJHCutCore.dylib "$bundle/Contents/Frameworks/"
 cp Resources/Info.plist "$bundle/Contents/Info.plist"
+bash Scripts/build-icon.sh
+cp Resources/JHCutStudio.icns "$bundle/Contents/Resources/"
 if [[ -f Resources/Library/manifest.json ]]; then
   mkdir -p "$bundle/Contents/Resources/Library"
   rsync -a --delete Resources/Library/ "$bundle/Contents/Resources/Library/"
@@ -40,4 +42,5 @@ if [[ -f Resources/Whisper/whisper-cli ]]; then
 fi
 codesign --force --sign - "$bundle/Contents/Frameworks/libJHCutCore.dylib"
 codesign --force --sign - "$bundle"
+touch "$bundle"
 echo "Built $PWD/$bundle (local ad-hoc signature; not notarized)"

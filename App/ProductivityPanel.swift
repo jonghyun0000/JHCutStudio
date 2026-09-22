@@ -32,12 +32,28 @@ struct SpeechTools: View {
         VStack(alignment: .leading, spacing: 8) {
             Text("한국어 자동 자막").font(JH.Font.label.weight(.semibold))
             Text(model.transcriptionStatus).font(JH.Font.micro).foregroundStyle(.secondary)
+            if !model.selectedSpeechClips.isEmpty {
+                Text("선택한 음성 클립 \(model.selectedSpeechClips.count)개").font(JH.Font.caption)
+                ForEach(model.selectedSpeechClips.prefix(4), id: \.1.id) { entry in
+                    Text(entry.1.name).font(JH.Font.micro).lineLimit(1).foregroundStyle(.secondary)
+                }
+            }
+            Picker("자막 스타일", selection: $model.transcriptionPresetID) {
+                ForEach(model.allTitlePresets) { preset in Text(preset.name).tag(preset.id) }
+            }.disabled(model.busyDocument)
             if model.transcriptionReady {
-                Button("선택 클립에서 한국어 인식") { model.transcribeSelection() }.disabled(model.selectedSound == nil || model.busyDocument)
+                Button("자동 자막 생성") { model.transcribeSelection() }
+                    .buttonStyle(.jhPrimary).disabled(model.selectedSpeechClips.isEmpty || model.busyDocument)
             } else {
                 Button("Whisper 모델 설치…") { model.installSpeechModel() }.disabled(model.busyDocument)
             }
-            Text("영상 또는 오디오 클립을 선택하세요. 새 자막 트랙에 추가하며 문구와 싱크는 검토가 필요합니다.").font(JH.Font.micro).foregroundStyle(.secondary)
+            if model.transcriptionActive {
+                ProgressView(value: model.transcriptionProgress).accessibilityLabel("음성 인식 진행률")
+                Text(model.productivityStatus).font(JH.Font.micro)
+                Button("자막 생성 취소") { model.cancelProductivity() }
+            }
+            Text("1. 타임라인에서 대사가 있는 영상·오디오 선택\n2. 스타일 선택 후 자동 자막 생성\n3. 자막 목록에서 문구·싱크 검토").font(JH.Font.caption).foregroundStyle(.secondary)
+            Text("여러 클립도 함께 선택할 수 있습니다. 기존 자막은 유지하고 새 트랙에 추가합니다. 음성은 외부로 업로드하지 않습니다.").font(JH.Font.micro).foregroundStyle(.secondary)
         }.buttonStyle(.jhTool).font(JH.Font.caption).onAppear { model.refreshTranscriptionStatus() }
     }
 }

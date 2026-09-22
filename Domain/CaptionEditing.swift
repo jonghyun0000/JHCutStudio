@@ -2,6 +2,20 @@ import Foundation
 import CoreFoundation
 
 public enum CaptionEditing {
+    /// Recognition timestamps are absolute source positions. Clamp before mapping through trim/rate.
+    public static func automaticClips(cues: [CaptionCue], source: Clip, style: Title) -> [Clip] {
+        let rate = source.playbackRate ?? PlaybackRate()
+        let sourceEnd = source.sourceStart + source.sourceDuration
+        return cues.sorted { $0.start < $1.start }.compactMap { cue in
+            let text = cue.text.trimmingCharacters(in: .whitespacesAndNewlines)
+            let begin = max(source.sourceStart, cue.start)
+            let end = min(sourceEnd, cue.start + cue.duration)
+            guard !text.isEmpty, end > begin else { return nil }
+            var title = style; title.text = text
+            return Clip(name: "자동 자막", start: source.start + rate.timelineDuration(for: begin - source.sourceStart),
+                        duration: rate.timelineDuration(for: end - begin), title: title)
+        }
+    }
     /// Caller supplies adjacent title clips in timeline order. A gap is intentionally covered
     /// by the merged caption. Animated titles must be kept separate because concatenating text
     /// cannot faithfully preserve two independent motion/fade histories with one static title.

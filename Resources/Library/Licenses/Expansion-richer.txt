@@ -1,0 +1,8 @@
+Author: Alex McCulloch (Pro Sensory)
+Source: https://opengameart.org/content/richer
+Download: https://opengameart.org/sites/default/files/Richer%20than%20me.wav
+Source archive/file SHA256: 4b01f3cbf18f3f92908de3b233cb9173a09b2b3f3519a339de28cab4b18244f9
+License: CC0 1.0
+License URL: https://creativecommons.org/publicdomain/zero/1.0/
+Reviewed: 2026-09-20
+Whole original track. No looping, stretching, or trimming. OGG decoded to PCM WAV when required.

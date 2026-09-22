@@ -1,0 +1,8 @@
+Author: Alex McCulloch (Pro Sensory)
+Source: https://opengameart.org/content/chilly-bells
+Download: https://opengameart.org/sites/default/files/chilly_bells_2.wav
+Source archive/file SHA256: 50a464b5e5197e9beeac38dffb12932b17a335bdde64adb3a802c539310e215e
+License: CC0 1.0
+License URL: https://creativecommons.org/publicdomain/zero/1.0/
+Reviewed: 2026-09-20
+Whole original track. No looping, stretching, or trimming. OGG decoded to PCM WAV when required.
