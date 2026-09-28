@@ -26,6 +26,7 @@ final class TimelineInstruction: NSObject, AVVideoCompositionInstructionProtocol
 
 /// Shared by AVPlayerItem, AVAssetImageGenerator, and AVAssetReaderVideoCompositionOutput.
 public final class TimelineCompositor: NSObject, AVVideoCompositing {
+    private static let greenKey = CIColorKernel(source: "kernel vec4 key(__sample s, float strength) { vec3 rgb = unpremultiply(s).rgb; float excess = max(0.0, rgb.g - max(rgb.r, rgb.b)); float alpha = 1.0 - smoothstep(0.05, max(0.06, 1.0-strength), excess); return s * alpha; }")
     private let queue = DispatchQueue(label: "studio.jhcut.compositor", qos: .userInitiated)
     private let context = CIContext(options: [.workingColorSpace: CGColorSpace(name: CGColorSpace.extendedLinearSRGB)!, .cacheIntermediates: false])
     // Match AVFoundation's video Rec.709 profile (HDTV), rather than the distinct generic graphics BT.709 ICC profile.
@@ -74,6 +75,27 @@ public final class TimelineCompositor: NSObject, AVVideoCompositing {
                         if visual.exposure != 0 { image = image.applyingFilter("CIExposureAdjust", parameters: ["inputEV": visual.exposure]) }
                         if visual.contrast != 1 || visual.saturation != 1 {
                             image = image.applyingFilter("CIColorControls", parameters: ["inputContrast": visual.contrast, "inputSaturation": visual.saturation])
+                        }
+                        if visual.temperature != nil || visual.tint != nil {
+                            image = image.applyingFilter("CITemperatureAndTint", parameters: ["inputNeutral": CIVector(x: 6500, y: 0), "inputTargetNeutral": CIVector(x: visual.temperature ?? 6500, y: visual.tint ?? 0)])
+                        }
+                        if visual.shadows != nil || visual.highlights != nil {
+                            image = image.applyingFilter("CIToneCurve", parameters: ["inputPoint0": CIVector(x: 0, y: 0), "inputPoint1": CIVector(x: 0.25, y: 0.25 + (visual.shadows ?? 0)), "inputPoint2": CIVector(x: 0.5, y: 0.5), "inputPoint3": CIVector(x: 0.75, y: 0.75 + (visual.highlights ?? 0)), "inputPoint4": CIVector(x: 1, y: 1)])
+                        }
+                        if let lut = visual.lut {
+                            let data = lut.values.withUnsafeBytes { Data($0) }
+                            image = image.applyingFilter("CIColorCubeWithColorSpace", parameters: ["inputCubeDimension": lut.size, "inputCubeData": data, "inputColorSpace": CGColorSpace(name: CGColorSpace.sRGB)!])
+                        }
+                        if let strength = visual.greenScreen, strength > 0 {
+                            guard let keyed = Self.greenKey?.apply(extent: image.extent, arguments: [image, strength]) else { request.finish(with: MediaEngineError.failed("크로마키를 적용하지 못했습니다.")); return }
+                            image = keyed
+                        }
+                        if visual.ellipseMask == true {
+                            let extent = image.extent
+                            let mask = CIFilter(name: "CIRadialGradient", parameters: ["inputCenter": CIVector(x: 0, y: 0), "inputRadius0": 0.96, "inputRadius1": 1.0, "inputColor0": CIColor.white, "inputColor1": CIColor.black])!.outputImage!
+                                .transformed(by: CGAffineTransform(scaleX: extent.width / 2, y: extent.height / 2))
+                                .transformed(by: CGAffineTransform(translationX: extent.midX, y: extent.midY))
+                            image = image.applyingFilter("CIBlendWithMask", parameters: ["inputBackgroundImage": CIImage(color: .clear).cropped(to: extent), "inputMaskImage": mask]).cropped(to: extent)
                         }
                     }
                     let input = image.extent

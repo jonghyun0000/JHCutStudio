@@ -10,6 +10,6 @@ if [[ ! -d "$JHCUT_SDK_PATH" ]]; then JHCUT_SDK_PATH="$(xcrun --show-sdk-path)";
 "$JHCUT_TOOLCHAIN/swiftc" -swift-version 5 -target "$(uname -m)-apple-macos14.0" -sdk "$JHCUT_SDK_PATH" -O -g \
   -parse-as-library -D LIBRARY_EXPANSION_PROBE \
   -I Build -L Build -lJHCutCore -Xlinker -rpath -Xlinker @executable_path \
-  App/EditorModel.swift App/EditorProductivity.swift Validation/Fixtures.swift Tests/LibraryExpansionProbe.swift \
+  App/EditorModel.swift App/EditorProductivity.swift App/EditorWorkflow.swift Validation/Fixtures.swift Tests/LibraryExpansionProbe.swift \
   -o Build/LibraryExpansionProbe
 exec Build/LibraryExpansionProbe "${1:-$JHCUT_ROOT/Artifacts/Playback-Library}"

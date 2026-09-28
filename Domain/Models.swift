@@ -18,6 +18,7 @@ public struct MediaAsset: Codable, Identifiable, Equatable, Sendable {
     public var colorInfo: String
     public var supported: Bool
     public var issue: String?
+    public var contentHash: String?
     public var provenance: AssetProvenance?
     public init(id: UUID = UUID(), name: String, path: String, relativePath: String? = nil, bookmark: Data? = nil, kind: MediaKind, duration: MediaTime = .zero, width: Int = 0, height: Int = 0, hasAudio: Bool = false, codec: String = "", colorInfo: String = "", supported: Bool = true, issue: String? = nil, provenance: AssetProvenance? = nil) {
         self.id = id; self.name = name; self.path = path; self.relativePath = relativePath; self.bookmark = bookmark; self.kind = kind; self.duration = duration; self.width = width; self.height = height; self.hasAudio = hasAudio; self.codec = codec; self.colorInfo = colorInfo; self.supported = supported; self.issue = issue
@@ -79,6 +80,10 @@ public struct Clip: Codable, Identifiable, Equatable, Sendable {
     public var audioFadeIn: MediaTime?
     public var audioFadeOut: MediaTime?
     public var keyframes: [TransformKeyframe]?
+    public var connection: ClipConnection?
+    public var lineageID: UUID?
+    public var ducking: [GainPoint]?
+    public var captionMetadata: CaptionMetadata?
     public var end: MediaTime { start + duration }
     public init(id: UUID = UUID(), name: String = "클립", assetID: UUID? = nil, start: MediaTime = .zero, sourceStart: MediaTime = .zero, duration: MediaTime = MediaTime(seconds: 3), volume: Double = 1, transform: ClipTransform = ClipTransform(), title: Title? = nil, playbackRate: PlaybackRate? = nil, visual: VisualAdjustments? = nil, fadeIn: MediaTime? = nil, fadeOut: MediaTime? = nil, audioFadeIn: MediaTime? = nil, audioFadeOut: MediaTime? = nil, keyframes: [TransformKeyframe]? = nil) {
         self.id = id; self.name = name; self.assetID = assetID; self.start = start; self.sourceStart = sourceStart; self.duration = duration; self.volume = volume; self.transform = transform; self.title = title
@@ -95,6 +100,7 @@ public struct Track: Codable, Identifiable, Equatable, Sendable {
     public var isMuted: Bool
     public var isHidden: Bool
     public var isLocked: Bool
+    public var syncLocked: Bool?
     public init(id: UUID = UUID(), name: String, kind: TrackKind, clips: [Clip] = [], isMuted: Bool = false, isHidden: Bool = false, isLocked: Bool = false) {
         self.id = id; self.name = name; self.kind = kind; self.clips = clips; self.isMuted = isMuted; self.isHidden = isHidden; self.isLocked = isLocked
     }
@@ -108,6 +114,8 @@ public struct Sequence: Codable, Identifiable, Equatable, Sendable {
     public var frameRate: FrameRate
     public var colorSpace: String
     public var tracks: [Track]
+    public var markers: [TimelineMarker]?
+    public var speakers: [SpeakerProfile]?
     public var duration: MediaTime { tracks.flatMap(\.clips).map(\.end).max() ?? .zero }
     public init(id: UUID = UUID(), name: String = "시퀀스 1", width: Int = 1080, height: Int = 1920, frameRate: FrameRate = FrameRate(), colorSpace: String = "Rec.709", tracks: [Track] = [Track(name: "메인 영상", kind: .video), Track(name: "오버레이", kind: .overlay), Track(name: "제목 · 자막", kind: .title), Track(name: "오디오", kind: .audio)]) {
         self.id = id; self.name = name; self.width = width; self.height = height; self.frameRate = frameRate; self.colorSpace = colorSpace; self.tracks = tracks
@@ -121,6 +129,8 @@ public struct Project: Codable, Identifiable, Equatable, Sendable {
     public var assets: [MediaAsset]
     public var sequence: Sequence
     public var derivedSequences: [Sequence]?
+    /// Project glossary for caption translation.
+    public var glossary: [GlossaryEntry]?
     public init(name: String = "새 프로젝트") {
         schemaVersion = 1; id = UUID(); self.name = name; assets = []; sequence = Sequence(); derivedSequences = nil
     }

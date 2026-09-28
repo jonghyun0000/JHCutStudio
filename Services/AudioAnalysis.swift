@@ -109,6 +109,73 @@ enum SourcePCM {
     }
 }
 
+extension SourcePCM {
+    /// Same contract as `read`, but bit-exact from run to run when possible.
+    ///
+    /// Measured: AVAssetReader's AAC decode differs by up to 3e-7 between runs on ~30% of samples
+    /// (it depends on how the reader partitions buffers), which flipped ~65 of 480,000 16-bit
+    /// samples per 30 s and occasionally moved a Whisper timestamp. ExtAudioFile (AVAudioFile)
+    /// decoded the same files identically on every run and sample-aligned with the reader (lag 0).
+    /// It is used only when the file has one audio track and its first second matches the reader;
+    /// otherwise this falls back to `read`.
+    static func readStable(url: URL, sourceStart: MediaTime, duration: MediaTime?, consume: (Chunk) throws -> Void) async throws -> Range {
+        guard url.isFileURL, sourceStart >= .zero, duration == nil || duration! > .zero else { throw AudioAnalysisError("로컬 파일과 0 이상 시작·양수 길이를 지정하세요.") }
+        let scoped = url.startAccessingSecurityScopedResource()
+        defer { if scoped { url.stopAccessingSecurityScopedResource() } }
+        let asset = AVURLAsset(url: url)
+        guard let tracks = try? await asset.loadTracks(withMediaType: .audio), tracks.count == 1,
+              let assetDuration = try? await asset.load(.duration).seconds, assetDuration.isFinite, sourceStart.seconds < assetDuration,
+              let file = try? AVAudioFile(forReading: url), file.processingFormat.commonFormat == .pcmFormatFloat32 else {
+            return try await read(url: url, sourceStart: sourceStart, duration: duration, consume: consume)
+        }
+        let length = duration?.seconds ?? (assetDuration - sourceStart.seconds)
+        guard length.isFinite, length > 0, sourceStart.seconds + length <= assetDuration + 0.0001 else { throw AudioAnalysisError("분석 범위가 원본 길이를 초과합니다.") }
+        let format = file.processingFormat, rate = format.sampleRate, channels = Int(format.channelCount)
+        let firstFrame = AVAudioFramePosition((sourceStart.seconds * rate).rounded())
+        let endFrame = min(file.length, AVAudioFramePosition(((sourceStart.seconds + length) * rate).rounded()))
+        guard channels > 0, firstFrame < endFrame else { return try await read(url: url, sourceStart: sourceStart, duration: duration, consume: consume) }
+        func block(_ at: AVAudioFramePosition, _ count: AVAudioFrameCount) throws -> [Float] {
+            guard let buffer = AVAudioPCMBuffer(pcmFormat: format, frameCapacity: count) else { throw AudioAnalysisError("PCM 버퍼를 만들지 못했습니다.") }
+            file.framePosition = at
+            try file.read(into: buffer, frameCount: count)
+            let n = Int(buffer.frameLength), data = buffer.floatChannelData!
+            var values = [Float](repeating: 0, count: n * channels)
+            for c in 0..<channels { let src = data[c]; for i in 0..<n { values[i * channels + c] = src[i] } }
+            return values
+        }
+        // Alignment check against the reader on the first second before anything is consumed.
+        let probeFrames = AVAudioFrameCount(min(Double(endFrame - firstFrame), rate))
+        let fileProbe = try block(firstFrame, probeFrames)
+        var readerProbe: [Float] = []
+        _ = try await read(url: url, sourceStart: sourceStart, duration: MediaTime(seconds: Double(probeFrames) / rate)) { chunk in
+            guard chunk.channels == channels else { throw AudioAnalysisError("채널 수 불일치") }
+            readerProbe += chunk.values
+        }
+        let compared = min(fileProbe.count, readerProbe.count)
+        var worst: Float = 0
+        for i in 0..<compared { worst = max(worst, abs(fileProbe[i] - readerProbe[i])) }
+        guard compared > 0, abs(fileProbe.count - readerProbe.count) <= channels * 2, worst <= 1e-4 else {
+            return try await read(url: url, sourceStart: sourceStart, duration: duration, consume: consume)
+        }
+        var at = firstFrame
+        while at < endFrame {
+            try Task.checkCancellation()
+            let count = AVAudioFrameCount(min(16_384, endFrame - at))
+            // One pool per block: decoder and consumer buffers must not accumulate over a 2-hour read.
+            let read = try autoreleasepool { () throws -> Int in
+                let values = try block(at, count)
+                guard !values.isEmpty else { return 0 }
+                guard values.allSatisfy(\.isFinite) else { throw AudioAnalysisError("오디오에 유효하지 않은 샘플이 있습니다.") }
+                try consume(Chunk(values: values, sampleRate: rate, channels: channels, start: Double(at) / rate))
+                return values.count / channels
+            }
+            guard read > 0 else { break }
+            at += AVAudioFramePosition(read)
+        }
+        return Range(start: sourceStart.seconds, duration: length)
+    }
+}
+
 public enum AudioAnalysis {
     public static func analyze(url: URL, sourceStart: MediaTime = .zero, duration: MediaTime? = nil,
                                options: AudioAnalysisOptions = .init()) async throws -> AudioAnalysisResult {

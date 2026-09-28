@@ -1,4 +1,5 @@
 import SwiftUI
+import AppKit
 import JHCutCore
 
 /// Canvas presets offered in the format picker. Every entry is inside the renderer's 4096-per-axis and
@@ -53,9 +54,56 @@ struct ProjectTools: View {
                     .buttonStyle(.jhTool).font(JH.Font.caption)
                 }
 
+                section("최종 오디오 믹스") {
+                    Picker("목표 음량", selection: $model.targetLUFS) { Text("-14 LUFS").tag(-14.0); Text("-16 LUFS").tag(-16.0); Text("-23 LUFS").tag(-23.0) }
+                    Toggle("전체 믹스 음성 강조 · 대사 중심 영상용", isOn: $model.enhanceMixVoice)
+                    Button("믹스 완성 버전 만들기") { model.masterMix() }.disabled(model.busyDocument || model.plan == nil)
+                    Text(model.mixStatus).font(JH.Font.micro)
+                    Text("원본 버전 보존 · 저음 정리/압축/작은 잡음 감쇠 선택 · 샘플 피크 제한. 믹스 완성 후 편집을 바꾸면 원본 버전에서 다시 만드세요.").font(JH.Font.micro).foregroundStyle(.secondary)
+                }
+                section("제작 템플릿") {
+                    ForEach(EditTemplate.Kind.allCases, id: \.self) { kind in Button(kind.rawValue) { model.applyTemplate(kind) } }
+                    Text("현재 영상 위에 편집 가능한 제목·전환·마무리를 추가합니다.").font(JH.Font.micro)
+                }
                 section("출력 형식") { formatControls }
 
-                section("출력 품질") { qualityControls }
+                section("출력 품질") {
+                    Picker("파일 형식", selection: $model.exportCodec) { ForEach(ExportJob.Codec.allCases, id: \.self) { Text($0.label).tag($0) } }
+                    if model.exportCodec == .proRes422 {
+                        Text("ProRes 422 · 편집용 MOV · 비트레이트 자동 · H.264/HEVC보다 큰 파일").font(JH.Font.micro)
+                    } else { qualityControls }
+                    Toggle("반복 구간만 출력", isOn: $model.exportRangeEnabled)
+                    TextField("시작 초", value: $model.loopStart, format: .number).textFieldStyle(.roundedBorder)
+                    TextField("끝 초", value: $model.loopEnd, format: .number).textFieldStyle(.roundedBorder)
+                    Button("출력 대기열에 추가…") { model.exportVideo() }
+                    ForEach(model.exportQueue) { item in
+                        HStack {
+                            Text(item.url.lastPathComponent + " · " + item.status).font(JH.Font.micro).lineLimit(2)
+                            if item.status != "출력 중" { Button("제거") { model.removeQueuedExport(item.id) } }
+                        }
+                    }
+                    Button("대기열 계속") { model.startNextExport() }.disabled(model.isExporting)
+                    Toggle("SRT 자막 파일도 함께 저장 · 번인 자막과 비교", isOn: $model.exportSidecarSRT)
+                    OutputQualityView(model: model)
+                    DisclosureGroup("최근 출력 기록 \(model.exportJournal.count)개") {
+                        ForEach(Array(model.exportJournal.reversed().enumerated()), id: \.offset) { _, record in
+                            Text(journalLabel(record)).font(JH.Font.micro)
+                        }
+                    }
+
+
+                }
+                section("설치 점검 · 프로젝트 백업") { InstallAndBackupView(model: model) }
+                section("마커와 반복 재생") {
+                    Button("현재 위치에 마커 추가") { model.addMarker() }
+                    Toggle("선택 구간 반복", isOn: $model.loopEnabled)
+                    ForEach(model.project.sequence.markers ?? []) { marker in
+                        HStack {
+                            Button(marker.name + String(format: " · %.2f초", marker.time.seconds)) { model.seek(marker.time.seconds) }
+                            Spacer(); Button("삭제") { model.removeMarker(marker.id) }
+                        }
+                    }
+                }
 
                 DisclosureGroup("프록시 미리보기") {
                     VStack(alignment: .leading, spacing: JH.Space.s) {
@@ -67,7 +115,7 @@ struct ProjectTools: View {
                             Button("프록시 생성") { model.generateProxies() }.disabled(model.busyDocument)
                             Button("캐시 비우기") { model.clearProxies() }.disabled(model.busyDocument)
                         }
-                        Text("최대 1280×720 · 캐시 2GB · MP4 출력은 항상 원본을 사용합니다.")
+                        Text("최대 1280×720 · 캐시 2GB · 영상 출력은 항상 원본을 사용합니다.")
                             .font(JH.Font.micro).foregroundStyle(.tertiary)
                     }
                     .buttonStyle(.jhTool).font(JH.Font.label)
@@ -97,6 +145,9 @@ struct ProjectTools: View {
                 }
 
                 section("미디어 연결") {
+                    Button("폴더에서 누락 원본 찾기…") { model.relinkMissingFolder() }.disabled(model.busyDocument)
+                    Button("HDR → SDR 사본 가져오기…") { model.prepareMedia(audioOnly: false) }.disabled(model.busyDocument)
+                    Button("원본 오디오 트랙 선택·추출…") { model.prepareMedia(audioOnly: true) }.disabled(model.busyDocument)
                     ForEach(model.project.assets) { asset in
                         HStack {
                             VStack(alignment: .leading, spacing: 2) {
@@ -117,7 +168,11 @@ struct ProjectTools: View {
             }
             .padding(JH.Space.l)
         }
-        .disabled(model.isExporting)
+    }
+
+    private func journalLabel(_ record: [String: String]) -> String {
+        let name = URL(fileURLWithPath: record["file"] ?? "").lastPathComponent
+        return [name, record["codec"] ?? "", record["status"] ?? "", record["quality"] ?? ""].filter { !$0.isEmpty }.joined(separator: " · ")
     }
 
     // MARK: Format
@@ -177,7 +232,7 @@ struct ProjectTools: View {
         .font(JH.Font.label)
 
         HStack {
-            Text("H.264 \(model.outputBitRate / 1_000_000)Mbps").font(JH.Font.numeric(11))
+            Text("\(model.exportCodec == .hevc ? "HEVC" : "H.264") \(model.outputBitRate / 1_000_000)Mbps").font(JH.Font.numeric(11))
             Spacer()
             Text("예상 \(estimatedMegabytes)MB").font(JH.Font.numeric(11)).foregroundStyle(.secondary)
         }
@@ -197,4 +252,69 @@ struct ProjectTools: View {
             content()
         }
     }
+}
+
+/// Result of the automatic check that runs after every export.
+struct OutputQualityView: View {
+    @ObservedObject var model: EditorModel
+    var body: some View {
+        VStack(alignment: .leading, spacing: 4) {
+            if !model.exportQualityStatus.isEmpty {
+                Text(model.exportQualityStatus).font(JH.Font.micro)
+                    .foregroundStyle(model.lastQualityReport.map { $0.passed ? Color.secondary : JH.Palette.warning } ?? Color.secondary)
+            }
+            if let report = model.lastQualityReport {
+                ForEach(Array(report.issues.prefix(6).enumerated()), id: \.offset) { _, issue in
+                    Text((issue.severity == .error ? "오류 · " : issue.severity == .warning ? "경고 · " : "") + issue.message).font(JH.Font.micro).lineLimit(2)
+                }
+                if report.issues.count > 6 { Text("외 \(report.issues.count - 6)개 · 보고서에서 확인").font(JH.Font.micro).foregroundStyle(.secondary) }
+                HStack {
+                    if let url = model.lastQualityReportURL { Button("검사 보고서 열기") { NSWorkspace.shared.open(url) } }
+                    Button("마지막 출력 다시 검사") { model.recheckLastExport() }.disabled(model.isExporting)
+                }
+            }
+        }
+    }
+}
+
+/// Installation check (model, translation packs, bundle, disk) and user backups of the document.
+struct InstallAndBackupView: View {
+    @ObservedObject var model: EditorModel
+    var body: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            HStack {
+                Button("설치 상태 점검") { model.runDiagnostics() }
+                if model.diagnostics != nil { Button("진단 정보 복사") { model.copyDiagnostics() } }
+            }
+            if let report = model.diagnostics {
+                Text("JH CUT Studio \(report.appVersion) (\(report.build)) · \(report.system)").font(JH.Font.micro).foregroundStyle(.secondary)
+                ForEach(report.items) { item in DiagnosticRow(item: item) }
+                if report.items.contains(where: { $0.id == "translation" && $0.level != .ok }) {
+                    Button("번역 언어 설정 열기") { model.openTranslationSettings() }
+                }
+            }
+            Divider()
+            Button("프로젝트 백업 만들기") { model.createProjectBackup() }.disabled(model.documentURL == nil || model.busyDocument)
+            Menu("백업에서 복원 · 새 문서로 열기") {
+                ForEach(model.backupEntries.prefix(12)) { entry in
+                    Button(entry.manifest.documentName + " · " + entry.manifest.createdAt.formatted(date: .abbreviated, time: .shortened)) { model.restoreBackup(entry) }
+                }
+                if model.backupEntries.isEmpty { Text("백업 없음") }
+            }.disabled(model.busyDocument)
+            Text("백업은 문서만 복사하고 원본 영상은 위치만 기록합니다. 복원은 기존 파일을 덮어쓰지 않습니다.").font(JH.Font.micro).foregroundStyle(.secondary)
+        }
+        .onAppear { model.refreshBackups() }
+    }
+}
+
+struct DiagnosticRow: View {
+    let item: DiagnosticItem
+    var body: some View {
+        VStack(alignment: .leading, spacing: 2) {
+            Text(symbol + " " + item.title).font(JH.Font.micro.weight(.semibold))
+                .foregroundStyle(item.level == .error ? JH.Palette.warning : item.level == .warning ? JH.Palette.warning : Color.primary)
+            Text(item.advice).font(JH.Font.micro).foregroundStyle(.secondary).lineLimit(4)
+        }
+    }
+    private var symbol: String { switch item.level { case .ok: return "✓"; case .info: return "ⓘ"; case .warning: return "!"; case .error: return "✕" } }
 }

@@ -32,6 +32,11 @@ struct ClipInspector: View {
             VStack(alignment: .leading, spacing: 14) {
                 Text(clip.name).font(JH.Font.sectionTitle).lineLimit(2)
                 Text(track.isLocked ? "잠긴 트랙" : "\(track.name) · 슬라이더는 바로 반영 · 숫자는 Return").font(JH.Font.caption).foregroundStyle(.secondary)
+                if clip.connection != nil {
+                    Text("원본과 연결됨 · 이동·트림·배속을 따라갑니다").font(JH.Font.micro)
+                    Button("원본 연결 해제") { model.detachSelected() }.buttonStyle(.jhTool).disabled(track.isLocked)
+                }
+                Button("선택 구간 반복 듣기") { model.loopSelection() }.buttonStyle(.jhTool)
                 DisclosureGroup("시간과 길이") { timing }
                 if draft.title != nil { DisclosureGroup("자막 모양", isExpanded: $titleExpanded) { titleControls } }
                 if track.kind != .audio { DisclosureGroup("화면 배치") { transformControls } }
@@ -56,13 +61,17 @@ struct ClipInspector: View {
                         Button(destination.name) { model.moveSelectedClip(to: destination) }.disabled(destination.isLocked)
                     }
                 }
+                if track.kind == .video { Button("다음 장면과 0.5초 디졸브") { model.perform(.crossDissolve(trackID: track.id, clipID: clip.id, duration: MediaTime(1, 2))) }.buttonStyle(.jhTool) }
                 Button("이 클립으로 이동") { model.seek(clip.start.seconds) }.buttonStyle(.jhTool)
                 Divider()
                 Button("일반 삭제 · 빈 공간 유지", role: .destructive) { model.remove() }.buttonStyle(.borderless)
-                Button("리플 삭제 · 현재 트랙", role: .destructive) { model.remove(ripple: true) }.buttonStyle(.borderless)
-                Text("리플 삭제는 현재 트랙의 뒤 클립만 당깁니다. 다른 트랙은 이동하지 않습니다.").font(JH.Font.caption).foregroundStyle(.secondary)
+                Button("리플 삭제 · 연결 포함", role: .destructive) { model.remove(ripple: true) }.buttonStyle(.borderless)
+                Text("연결 클립과 ‘리플 편집에 함께 이동’ 트랙도 반영됩니다. 잠긴 연결 트랙이 있으면 편집을 중단합니다.").font(JH.Font.caption).foregroundStyle(.secondary)
             }.padding(15)
         }.onAppear { sync() }.onChange(of: clip) { sync() }
+    }
+    private func optionalVisual(_ key: WritableKeyPath<VisualAdjustments, Double?>, fallback: Double) -> Binding<Double> {
+        Binding(get: { draft.visual?[keyPath: key] ?? fallback }, set: { value in if draft.visual == nil { draft.visual = VisualAdjustments() }; draft.visual?[keyPath: key] = value })
     }
     private var timing: some View {
         Group {
@@ -132,6 +141,14 @@ struct ClipInspector: View {
             slider("노출", visual(\.exposure), -4...4)
             slider("대비", visual(\.contrast), 0...2)
             slider("채도", visual(\.saturation), 0...2)
+            slider("색온도", optionalVisual(\.temperature, fallback: 6500), 2000...12000)
+            slider("색조", optionalVisual(\.tint, fallback: 0), -100...100)
+            slider("어두운 영역", optionalVisual(\.shadows, fallback: 0), -0.2...0.2)
+            slider("밝은 영역", optionalVisual(\.highlights, fallback: 0), -0.2...0.2)
+            slider("그린스크린 제거", optionalVisual(\.greenScreen, fallback: 0), 0...1)
+            Toggle("타원 마스크", isOn: Binding(get: { draft.visual?.ellipseMask == true }, set: { value in if draft.visual == nil { draft.visual = VisualAdjustments() }; draft.visual?.ellipseMask = value; commitNow() }))
+            Button(draft.visual?.lut?.name ?? "3D LUT 가져오기…") { model.importLUT() }
+            if draft.visual?.lut != nil { Button("LUT 해제") { draft.visual?.lut = nil; commitNow() } }
             slider("왼쪽 크롭", visual(\.cropLeft), 0...0.45)
             slider("오른쪽 크롭", visual(\.cropRight), 0...0.45)
             slider("위쪽 크롭", visual(\.cropTop), 0...0.45)

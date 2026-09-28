@@ -9,7 +9,7 @@ import JHCutCore
 @main struct AutoCaptionProbe {
  @MainActor static func main() async throws {
   _ = NSApplication.shared
-  let root = URL(fileURLWithPath: "Artifacts/Logo-Captions", isDirectory:true)
+  let root = URL(fileURLWithPath: CommandLine.arguments.dropFirst().first ?? "Artifacts/Logo-Captions", isDirectory:true)
   let source = root.appendingPathComponent("Speech/한국어 음성.aiff")
   let asset = try await MediaImporter.inspect(url:source)
   var project = Project(name:"한국어 자동 자막 실제 검증")

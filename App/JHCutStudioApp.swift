@@ -31,6 +31,8 @@ struct JHCutStudioApp: App {
                     if let index = CommandLine.arguments.firstIndex(of: "--project"), CommandLine.arguments.count > index + 1 {
                         model.load(URL(fileURLWithPath: CommandLine.arguments[index + 1]))
                     } else { model.checkRecoveryOnLaunch() }
+                    // Read-only install check; only problems that stop a feature raise an alert.
+                    model.runDiagnostics(alertOnError: true)
                 }
                 .onOpenURL { model.load($0) }
         }
@@ -56,7 +58,7 @@ struct JHCutStudioApp: App {
                 Button("리플 삭제 · 현재 트랙") { model.remove(ripple: true) }.disabled(model.selected == nil || model.isExporting)
                 Button("한국어 제목 추가") { model.addTitle() }.disabled(model.isExporting)
                 Divider()
-                Button("MP4 출력…") { model.exportVideo() }.keyboardShortcut("e").disabled(model.plan == nil || model.isExporting)
+                Button("영상 출력…") { model.exportVideo() }.keyboardShortcut("e").disabled(model.plan == nil || model.isExporting)
             }
         }
     }

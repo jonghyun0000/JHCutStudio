@@ -10,12 +10,12 @@ enum ClipEnvelopes {
         return result
     }
     static func audioVolume(clip: Clip, at time: CMTime) -> Float {
-        Float(clip.evaluatedVolume(at: MediaTime(time)) * fade(at: time, duration: clip.duration.cmTime,
+        Float(AudioAutomation.gain(clip.ducking, at: MediaTime(time)) * clip.evaluatedVolume(at: MediaTime(time)) * fade(at: time, duration: clip.duration.cmTime,
                                                            fadeIn: clip.audioFadeIn?.cmTime, fadeOut: clip.audioFadeOut?.cmTime))
     }
     static func applyAudio(clip: Clip, to input: AVMutableAudioMixInputParameters) {
         input.audioTimePitchAlgorithm = .spectral
-        guard !(clip.keyframes ?? []).isEmpty || (clip.audioFadeIn?.seconds ?? 0) > 0 || (clip.audioFadeOut?.seconds ?? 0) > 0 else {
+        guard !(clip.ducking ?? []).isEmpty || !(clip.keyframes ?? []).isEmpty || (clip.audioFadeIn?.seconds ?? 0) > 0 || (clip.audioFadeOut?.seconds ?? 0) > 0 else {
             // A flat ramp across the clip's own range, not a bare `setVolume` point: consecutive volume
             // points interpolate, so a point would slide this clip's level toward whatever the next clip
             // on the same packed lane asks for.
@@ -25,6 +25,7 @@ enum ClipEnvelopes {
         }
         var points = [CMTime.zero, clip.duration.cmTime]
         points += (clip.keyframes ?? []).map { $0.time.cmTime }
+        points += (clip.ducking ?? []).map { $0.time.cmTime }
         if let fade = clip.audioFadeIn, fade > .zero { points.append(fade.cmTime) }
         if let fade = clip.audioFadeOut, fade > .zero { points.append((clip.duration - fade).cmTime) }
         var sorted: [CMTime] = []

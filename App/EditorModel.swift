@@ -6,6 +6,11 @@ import CryptoKit
 import JHCutCore
 
 @MainActor
+final class PlaybackClock: ObservableObject {
+    @Published var seconds = 0.0
+}
+
+@MainActor
 final class EditorModel: ObservableObject {
     @Published var history = EditorHistory(project: Project()) {
         didSet { encodedProject = nil }
@@ -23,12 +28,14 @@ final class EditorModel: ObservableObject {
     @Published var isImporting = false
     @Published var isExporting = false
     @Published var exportProgress = 0.0
-    @Published var playhead = 0.0
+    let playbackClock = PlaybackClock()
+    var playhead: Double { get { playbackClock.seconds } set { playbackClock.seconds = newValue } }
     @Published var playing = false
     @Published var zoom = 48.0
     @Published var libraryVisible = true
     @Published var inspectorVisible = true
     @Published var savedData: Data?
+    private var diskRevision: Data?
     @Published var snappingEnabled = true
     @Published var bundledLibrary: AssetLibrary?
     @Published var auditionID: String?
@@ -36,6 +43,27 @@ final class EditorModel: ObservableObject {
     @Published var recoveryStatus = "변경사항을 로컬 복구본에 자동 저장합니다."
     private var auditionPlayer: AVAudioPlayer?
     private var auditionTask: Task<Void, Never>?
+    func playChannelPreview() {
+        guard !busyDocument, let (_, clip, asset) = selectedSpeechClips.first else { return }
+        stopAudition(); pausePlayback()
+        let source = asset.resolvedURL(relativeTo: mediaBaseURL), channel = speechOptions.channel
+        productivityBusy = true
+        productivityTask = Task {
+            defer { productivityBusy = false; productivityTask = nil }
+            do {
+                let preview = try await LocalTranscription.previewChannel(url: source, sourceStart: clip.sourceStart, duration: min(clip.sourceDuration, MediaTime(10, 1)), channel: channel)
+                try Task.checkCancellation()
+                let audio = try AVAudioPlayer(data: preview.data)
+                guard audio.prepareToPlay(), audio.play() else { throw ProjectError("대사 채널을 재생할 수 없습니다.") }
+                auditionPlayer = audio; auditionID = "speech-channel"
+                message = "대사 채널 \(preview.channel + 1) · 원본 시작 구간 미리듣기"
+                auditionTask = Task { [weak self] in
+                    try? await Task.sleep(nanoseconds: UInt64((audio.duration + 0.1) * 1_000_000_000))
+                    guard !Task.isCancelled, self?.auditionID == "speech-channel" else { return }; self?.stopAudition()
+                }
+            } catch { if !Task.isCancelled { self.error = error.localizedDescription } }
+        }
+    }
     private var recoveryTask: Task<Void, Never>?
     private let recoveryStore: RecoveryStore
     private var offeredRecovery = false
@@ -43,7 +71,7 @@ final class EditorModel: ObservableObject {
     var plan: RenderPlan?
     private var buildTask: Task<Void, Never>?
     private var buildGeneration = 0
-    private var exportJob: ExportJob?
+    var exportJob: ExportJob?
     var exportTask: Task<Void, Never>?
     var importTask: Task<Void, Never>?
     var productivityTask: Task<Void, Never>?
@@ -61,6 +89,70 @@ final class EditorModel: ObservableObject {
     @Published var analyzedClip: Clip?
     @Published var analyzedAsset: MediaAsset?
     @Published var analyzedProjectID: UUID?
+    @Published var speechModelID = "base"
+    var speechModelSpec: WhisperModelSpec { speechModelID == "small" ? .small : .base }
+    @Published var speechOptions = SpeechOptions()
+    @Published var autoCaptionImportedVideos = true
+    @Published var translateAfterTranscription = true
+    @Published var translationTargetLanguage = "ko"
+    @Published var translationSourceLanguage = "auto"
+    @Published var bilingualTranslation = false
+    @Published var translationGlossaryText = ""
+    /// TranslationStyle raw value applied to new translations.
+    @Published var translationStyle = TranslationStyle.natural.rawValue
+    @Published var translationActive = false
+    @Published var detectedSpeechLanguages = ""
+    @Published var subtitleExportScope = "visible"
+    var translationProvider: @MainActor ([String], String, String) async throws -> [String] = { texts, source, target in
+        try await CaptionTranslation.translate(texts, from: source, to: target)
+    }
+
+    @Published var replaceAutomaticCaptions = true
+    /// Long recognition keeps each finished 5-minute window on disk so a cancel or quit resumes.
+    @Published var useSpeechCheckpoints = true
+    /// Voice-activity analysis: silence, music and strong noise longer than 3 s are not sent to Whisper.
+    @Published var skipNonSpeech = true
+    /// Captions found over silence/music/noise by the last voice-activity check (not saved in the document).
+    @Published var silentCaptionWarnings: [UUID: VoiceActivityKind] = [:]
+    /// Captions kept from a collapsed Whisper repetition loop; the user should check them (not saved).
+    @Published var repetitionCaptionIDs: Set<UUID> = []
+    @Published var lastVoiceActivity: VoiceActivityReport?
+    /// In-memory analysis cache: "<file digest or path>|<start>|<duration>".
+    var voiceActivityCache: [String: VoiceActivityReport] = [:]
+    @Published var transcriptionDetail: TranscriptionProgress?
+    var checkpointWriteFailed = false
+    @Published var lastEvaluation: TranscriptEvaluationReport?
+    @Published var speakerStatus = ""
+    @Published var lastEvaluationReportURL: URL?
+    var reportsDirectory = (FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first
+        ?? FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent("Library/Application Support")).appendingPathComponent("JHCutStudio/Reports", isDirectory: true)
+    @Published var checkpointSummaries: [TranscriptionCheckpointSummary] = []
+    var speechWindowSeconds: Double = 300
+    var checkpointStore = TranscriptionCheckpointStore()
+    var mediaFingerprints = MediaFingerprintCache(persistURL: FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first?
+        .appendingPathComponent("JHCutStudio/media-fingerprints.json"))
+    @Published var loopEnabled = false
+    @Published var loopStart = 0.0
+    @Published var loopEnd = 0.0
+    @Published var exportRangeEnabled = false
+    /// Writes the burned-in captions as an .srt beside the video and compares the two after export.
+    @Published var exportSidecarSRT = false
+    @Published var diagnostics: DiagnosticReport?
+    @Published var backupEntries: [ProjectBackup.Entry] = []
+    var backupRoot = ProjectBackup.defaultRoot
+    @Published var exportQualityStatus = ""
+    @Published var lastQualityReport: OutputQualityReport?
+    @Published var lastQualityReportURL: URL?
+    var lastExportedRequest: QueuedExport?
+    @Published var exportQueue: [QueuedExport] = []
+    @Published var exportJournal: [[String: String]] = []
+    var exportJournalURL = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0].appendingPathComponent("JHCutStudio/export-history.json")
+    @Published var exportCodec = ExportJob.Codec.h264
+    @Published var duckingDB = -12.0
+    @Published var duckingRelease = 0.4
+    @Published var targetLUFS = -16.0
+    @Published var enhanceMixVoice = false
+    @Published var mixStatus = ""
     @Published var transcriptionReady = false
     @Published var transcriptionStatus = "모델 설치 상태 확인 중"
     @Published var transcriptionActive = false
@@ -85,7 +177,10 @@ final class EditorModel: ObservableObject {
     var frameStep: Double { 1.0 / max(1, fps) }
     /// Nearest frame boundary as an exact rational, never a float round-trip.
     func snapped(_ seconds: Double) -> MediaTime {
-        let frame = max(0, Int64((seconds * fps).rounded()))
+        let safe = seconds.isFinite ? max(0, min(project.sequence.duration.seconds, seconds)) : 0
+        let count = (safe * fps).rounded()
+        guard count.isFinite, count < Double(Int64.max) - 1024 else { return .zero }
+        let frame = max(0, Int64(count))
         let time = frameRate.time(forFrame: frame)
         let limit = project.sequence.duration
         return time > limit ? limit : time
@@ -100,14 +195,17 @@ final class EditorModel: ObservableObject {
     }
     var dirty: Bool { projectData() != savedData }
     var selected: (Track, Clip)? {
+        guard let selectedClipID else { return nil }
         for track in project.sequence.tracks {
             if let clip = track.clips.first(where: { $0.id == selectedClipID }) { return (track, clip) }
         }
         return nil
     }
     /// The recovery store is injectable so headless probes never write to the user's slot.
-    init(recoveryStore: RecoveryStore = RecoveryStore()) {
+    init(recoveryStore: RecoveryStore = RecoveryStore(), exportHistoryURL: URL? = nil) {
         self.recoveryStore = recoveryStore
+        if let exportHistoryURL { exportJournalURL = exportHistoryURL }
+        if let data = try? Data(contentsOf: exportJournalURL), data.count <= 1_000_000, let records = try? JSONDecoder().decode([[String: String]].self, from: data) { exportJournal = Array(records.suffix(30)) }
         savedData = projectData()
         bundledLibrary = try? AssetLibrary()
         if let data = try? Data(contentsOf: Self.presetsURL), let presets = try? JSONDecoder().decode([TitlePreset].self, from: data) { userTitlePresets = presets }
@@ -119,6 +217,9 @@ final class EditorModel: ObservableObject {
                 // `rate == 0` also means buffering. It must never erase a pending play request.
                 if self.playing, time.seconds.isFinite, abs(self.playhead - time.seconds) > 0.001 {
                     self.playhead = time.seconds
+                    if self.loopEnabled, self.validLoopRange != nil, time.seconds >= self.loopEnd {
+                        self.player.seek(to: CMTime(seconds: self.loopStart, preferredTimescale: 60000), toleranceBefore: .zero, toleranceAfter: .zero)
+                    }
                 }
             }
         }
@@ -129,6 +230,9 @@ final class EditorModel: ObservableObject {
             NotificationCenter.default.addObserver(forName: name, object: nil, queue: .main) { [weak self] notification in
                 MainActor.assumeIsolated {
                     guard let self, let item = notification.object as? AVPlayerItem, item === self.player.currentItem else { return }
+                    if name == AVPlayerItem.didPlayToEndTimeNotification, self.loopEnabled, self.validLoopRange != nil {
+                        self.seek(self.loopStart); self.playing = true; self.player.play(); return
+                    }
                     self.pausePlayback()
                     if name == AVPlayerItem.failedToPlayToEndTimeNotification {
                         self.error = item.error?.localizedDescription ?? "미리보기 재생에 실패했습니다."
@@ -168,9 +272,25 @@ final class EditorModel: ObservableObject {
             return event
         }
     }
+    deinit {
+        if let observer { player.removeTimeObserver(observer) }
+        for token in playbackObservers + menuObservers { NotificationCenter.default.removeObserver(token) }
+        if let keyMonitor { NSEvent.removeMonitor(keyMonitor) }
+        buildTask?.cancel(); recoveryTask?.cancel(); auditionTask?.cancel()
+    }
     @discardableResult func perform(_ command: EditCommand) -> Bool {
         guard !isExporting else { return false }
-        do { try history.apply(command); message = "편집 적용됨"; scheduleRecovery(); rebuild(); return true } catch { self.error = error.localizedDescription; return false }
+        do {
+            let before = project
+            try history.apply(command)
+            guard project != before else { return true }
+            message = "편집 적용됨"; scheduleRecovery()
+            let existing = Set(project.sequence.tracks.flatMap(\.clips).map(\.id))
+            selectedClipIDs.formIntersection(existing)
+            if let id = selectedClipID, !existing.contains(id) { selectedClipID = selectedClipIDs.first }
+            if Self.needsRender(before, project) { rebuild() }
+            return true
+        } catch { self.error = error.localizedDescription; return false }
     }
     func undo() {
         guard !isExporting else { return }
@@ -183,6 +303,7 @@ final class EditorModel: ObservableObject {
         history.redo(); message = "타임라인 재실행"; scheduleRecovery(); rebuild()
     }
     func seek(_ seconds: Double) {
+        guard seconds.isFinite else { error = "이동 시간을 유효한 숫자로 입력하세요."; return }
         let time = snapped(seconds)
         playhead = time.seconds
         player.seek(to: time.cmTime, toleranceBefore: .zero, toleranceAfter: .zero)
@@ -197,6 +318,7 @@ final class EditorModel: ObservableObject {
             pausePlayback(); return
         }
         guard !isBuilding, !isExporting, plan != nil else { return }
+        if loopEnabled, validLoopRange == nil { error = "반복 구간의 시작·끝을 영상 길이 안에서 지정하세요."; return }
         stopAudition()
         if playhead >= project.sequence.duration.seconds - frameStep { seek(0) }
         playing = true
@@ -225,7 +347,7 @@ final class EditorModel: ObservableObject {
                 for asset in snapshot.assets where overrides[asset.id] != nil {
                     if let cached = try await cache.cachedURL(for: asset.resolvedURL(relativeTo: url)), cached == overrides[asset.id] { verified[asset.id] = cached }
                 }
-                let result = try await TimelineRenderer.build(project: snapshot, documentURL: url, mediaURLOverrides: verified)
+                let result = try await TimelineRenderer.build(project: snapshot, documentURL: url, mediaURLOverrides: verified, cacheInspection: true)
                 guard let self, !Task.isCancelled, self.buildGeneration == generation else { return }
                 self.plan = result; self.player.replaceCurrentItem(with: result.makePlayerItem())
                 self.isBuilding = false; self.seek(self.playhead)
@@ -303,7 +425,7 @@ final class EditorModel: ObservableObject {
         let buildID = buildGeneration
         guard snapshot.sequence.duration > .zero else { return }
         do {
-            let result = try await TimelineRenderer.build(project: snapshot, documentURL: url, mediaURLOverrides: overrides)
+            let result = try await TimelineRenderer.build(project: snapshot, documentURL: url, mediaURLOverrides: overrides, cacheInspection: true)
             // A committed rebuild started meanwhile owns the player; never fight it.
             guard liveGeneration == generation, buildGeneration == buildID, !isBuilding else { return }
             let resume = player.currentTime()
@@ -324,7 +446,8 @@ final class EditorModel: ObservableObject {
         if panel.runModal() == .OK { importFiles(panel.urls) }
     }
     func importFiles(_ urls: [URL]) {
-        guard !isImporting, !isExporting else { return }
+        guard !busyDocument else { return }
+        let captionOnImport = autoCaptionImportedVideos, importedInto = project.id
         isImporting = true; importProgress = 0
         importTask = Task {
             defer { isImporting = false; importTask = nil }
@@ -333,7 +456,8 @@ final class EditorModel: ObservableObject {
                 for (index, url) in urls.enumerated() {
                     try Task.checkCancellation()
                     do {
-                        let asset = try await MediaImporter.inspect(url: url)
+                        var asset = try await MediaImporter.inspect(url: url)
+                        asset.contentHash = try await FileIdentity.sha256(url)
                         assets.append(asset)
                         if !asset.supported { failures.append("\(asset.name): \(asset.issue ?? "지원하지 않는 미디어")") }
                     } catch is CancellationError { throw CancellationError() }
@@ -341,9 +465,17 @@ final class EditorModel: ObservableObject {
                     importProgress = Double(index + 1) / Double(max(1, urls.count))
                 }
                 try Task.checkCancellation()
-                if !assets.isEmpty, perform(.batch(assets.map { .addAsset($0) })) { selectedAssetID = assets.last?.id }
+                guard project.id == importedInto else { throw CancellationError() }
+                guard !assets.isEmpty else { error = failures.joined(separator: "\n"); message = "가져올 수 있는 미디어가 없습니다."; return }
+                guard perform(.batch(assets.map { .addAsset($0) })) else { return }
+                selectedAssetID = assets.last?.id
+
                 message = "미디어 \(assets.count)개 가져옴 · 한 번의 실행취소로 되돌릴 수 있습니다."
                 if !failures.isEmpty { error = failures.joined(separator: "\n") }
+                if captionOnImport {
+                    isImporting = false
+                    captionImportedVideos(assets.filter { $0.kind == .video && $0.supported && $0.hasAudio })
+                }
             } catch { message = "가져오기 취소됨 · 프로젝트에 추가하지 않았습니다." }
         }
     }
@@ -351,7 +483,7 @@ final class EditorModel: ObservableObject {
     func addAsset(_ asset: MediaAsset, overlay: Bool = false) {
         guard asset.supported else { error = asset.issue ?? "지원하지 않는 미디어입니다."; return }
         let kind: TrackKind = asset.kind == .audio ? .audio : (overlay ? .overlay : .video)
-        guard let track = project.sequence.tracks.first(where: { $0.kind == kind }) else { return }
+        guard let track = writableTrack(kind) else { return }
         var clip = Clip(name: asset.name, assetID: asset.id, start: .zero, sourceStart: .zero,
                         duration: asset.kind == .image ? MediaTime(3, 1) : asset.duration)
         clip.start = kind == .video ? (track.clips.map { $0.start + $0.duration }.max() ?? .zero) : MediaTime(seconds: playhead)
@@ -360,9 +492,9 @@ final class EditorModel: ObservableObject {
         if perform(.addClip(trackID: track.id, clip: clip)) { selectClip(clip.id) }
     }
     func addTitle() {
-        guard let track = project.sequence.tracks.first(where: { $0.kind == .title }) else { return }
+        guard let track = writableTrack(.title) else { return }
         var clip = Clip(name: "한국어 제목", assetID: nil, start: MediaTime(seconds: playhead), sourceStart: .zero, duration: MediaTime(3, 1))
-        clip.title = Title(text: "종현의 첫 영상")
+        clip.title = TitleSizing.resized(Title(text: "종현의 첫 영상"), from: 1080, to: min(project.sequence.width, project.sequence.height))
         if perform(.addClip(trackID: track.id, clip: clip)) { selectClip(clip.id) }
     }
     func split() {
@@ -392,7 +524,12 @@ final class EditorModel: ObservableObject {
         }
         guard let destination else { return }
         do {
+            if destination == documentURL, let diskRevision,
+               (try? Data(contentsOf: destination)) != diskRevision {
+                error = "다른 프로그램에서 프로젝트 파일을 변경했습니다. 현재 편집을 ‘다른 이름으로 저장’하여 두 버전을 보존하세요."; return
+            }
             try ProjectStore.save(project, to: destination); documentURL = destination; savedData = projectData()
+            diskRevision = try Data(contentsOf: destination)
             recoveryTask?.cancel(); clearOwnRecovery()
             message = "저장됨 · \(destination.lastPathComponent)"
         }
@@ -412,7 +549,16 @@ final class EditorModel: ObservableObject {
     func newProject() {
         guard !busyDocument, permitDiscard() else { return }
         recoveryTask?.cancel(); stopAudition(); resetProductivityState()
-        history = EditorHistory(project: Project()); documentURL = nil; mediaBaseURL = nil; savedData = projectData(); selectedClipID = nil; selectedClipIDs = []; playhead = 0; rebuild()
+        history = EditorHistory(project: Project()); diskRevision = nil; documentURL = nil; mediaBaseURL = nil; savedData = projectData(); selectedClipID = nil; selectedClipIDs = []; playhead = 0; rebuild()
+    }
+    /// Opens a restored project as a NEW unsaved document (never over an existing file). Relative
+    /// media paths resolve against `baseURL`, the document's original location.
+    func openRestored(_ project: Project, baseURL: URL, note: String) {
+        guard !busyDocument, permitDiscard() else { return }
+        recoveryTask?.cancel(); stopAudition(); resetProductivityState()
+        history = EditorHistory(project: project); diskRevision = nil; documentURL = nil; mediaBaseURL = baseURL
+        selectedClipID = nil; selectedClipIDs = []; playhead = 0; savedData = nil
+        error = nil; message = note; rebuild()
     }
     func openProject() {
         guard !busyDocument else { return }
@@ -424,30 +570,40 @@ final class EditorModel: ObservableObject {
         do {
             let value = try ProjectStore.load(from: url)
             recoveryTask?.cancel(); stopAudition(); resetProductivityState()
-            history = EditorHistory(project: value); documentURL = url; mediaBaseURL = url; selectedClipID = nil; selectedClipIDs = []; playhead = 0
+            history = EditorHistory(project: value); diskRevision = try Data(contentsOf: url); documentURL = url; mediaBaseURL = url; selectedClipID = nil; selectedClipIDs = []; playhead = 0
             savedData = projectData(); message = "프로젝트 열림 · " + url.lastPathComponent; rebuild()
-        } catch { self.error = error.localizedDescription }
+        } catch {
+            self.error = error.localizedDescription
+            if FileManager.default.fileExists(atPath: ProjectStore.backupURL(for: url).path) {
+                let alert = NSAlert(); alert.messageText = "프로젝트를 열지 못했습니다. 이전 저장본을 복구할까요?"
+                alert.informativeText = error.localizedDescription + "\n원본과 백업은 그대로 보존하며, 복구 후 다른 이름으로 저장합니다."
+                alert.addButton(withTitle: "백업 복구"); alert.addButton(withTitle: "취소")
+                if alert.runModal() == .alertFirstButtonReturn {
+                    do {
+                        let recovered = try ProjectStore.recover(from: url)
+                        recoveryTask?.cancel(); stopAudition(); resetProductivityState()
+                        history = EditorHistory(project: recovered); documentURL = nil; mediaBaseURL = url
+                        selectedClipID = nil; selectedClipIDs = []; playhead = 0; savedData = nil
+                        self.error = nil; message = "백업 복구됨 · 다른 이름으로 저장하세요."; rebuild()
+                    } catch { self.error = error.localizedDescription }
+                }
+            }
+        }
     }
     func exportVideo() {
-        guard plan != nil, !isBuilding, !busyDocument else { return }
-        let panel = NSSavePanel(); panel.allowedContentTypes = [.mpeg4Movie]; panel.nameFieldStringValue = project.name + ".mp4"
-        panel.message = "\(project.sequence.width) × \(project.sequence.height) · \(frameRate.label) fps · SDR H.264 / AAC · \(outputBitRate / 1_000_000)Mbps"
+        guard plan != nil, !isBuilding, !isImporting, !productivityBusy, !proxyBusy else { return }
+        let codec = exportCodec
+        let panel = NSSavePanel(); panel.allowedContentTypes = codec == .proRes422 ? [.quickTimeMovie] : [.mpeg4Movie]
+        panel.nameFieldStringValue = project.name + "." + codec.fileExtension
+        panel.message = "\(project.sequence.width) × \(project.sequence.height) · \(frameRate.label) fps · \(codec.label)"
         guard panel.runModal() == .OK, let url = panel.url else { return }
-        if FileManager.default.fileExists(atPath: url.path) { error = "기존 파일 보호를 위해 다른 출력 이름을 선택하세요."; return }
-        stopAudition(); player.pause(); playing = false; isExporting = true; exportProgress = 0
-        let job = ExportJob(videoBitRate: outputBitRate); exportJob = job
-        let snapshot = project, base = mediaBaseURL
-        exportTask = Task {
-            do {
-                message = "출력용 원본 미디어 준비 중…"
-                let originalPlan = try await TimelineRenderer.build(project: snapshot, documentURL: base)
-                try Task.checkCancellation()
-                try await job.export(plan: originalPlan, to: url) { [weak self] value in Task { @MainActor in self?.exportProgress = value } }
-                message = "출력 완료 · \(url.lastPathComponent)"
-                NSWorkspace.shared.activateFileViewerSelecting([url])
-            } catch { self.error = error.localizedDescription; message = "출력이 중단되었습니다." }
-            isExporting = false; exportJob = nil; exportTask = nil
-        }
+        if FileManager.default.fileExists(atPath: url.path) || exportQueue.contains(where: { $0.url == url }) { error = "기존 파일 또는 대기 중인 출력과 다른 이름을 선택하세요."; return }
+        do {
+            guard loopStart.isFinite, loopEnd.isFinite, abs(loopStart) < 864000, abs(loopEnd) < 864000 else { throw ProjectError("출력 구간 시간을 확인하세요.") }
+            let snapshot = exportRangeEnabled ? try TimelineRange.project(project, start: MediaTime(seconds: loopStart), end: MediaTime(seconds: loopEnd)) : project
+            exportQueue.append(QueuedExport(project: snapshot, baseURL: mediaBaseURL, url: url, codec: codec, bitRate: outputBitRate))
+            startNextExport()
+        } catch { self.error = error.localizedDescription }
     }
     func cancelExport() { exportJob?.cancel(); exportTask?.cancel() }
 
@@ -489,7 +645,7 @@ final class EditorModel: ObservableObject {
                 asset.name = item.name
                 asset.provenance = AssetProvenance(sourceURL: item.sourceURL, author: item.author, license: item.license, licenseURL: item.licenseURL, sha256: item.sha256)
                 let kind: TrackKind = asset.kind == .audio ? .audio : .overlay
-                guard let track = project.sequence.tracks.first(where: { $0.kind == kind }) else { return }
+                guard let track = writableTrack(kind) else { return }
                 let available = max(frameRate.time(forFrame: 1), project.sequence.duration - insertion)
                 let length = asset.kind == .image ? (project.sequence.duration > insertion ? min(available, MediaTime(5, 1)) : MediaTime(5, 1)) : (item.category == .music && project.sequence.duration > insertion ? min(asset.duration, available) : asset.duration)
                 var clip = Clip(name: item.name, assetID: asset.id, start: insertion, duration: length, volume: item.category == .music ? 0.25 : 0.7)
@@ -507,12 +663,12 @@ final class EditorModel: ObservableObject {
         var commands: [EditCommand] = []; var newSelection: UUID?
         for track in project.sequence.tracks where track.kind == .title {
             for existing in track.clips where toAll || selectedClipIDs.contains(existing.id) || selectedClipID == existing.id {
-                var clip = existing; var title = preset.title; title.text = existing.title?.text ?? title.text; clip.title = title
+                var clip = existing; var title = TitleSizing.title(for: preset, width: project.sequence.width, height: project.sequence.height); title.text = existing.title?.text ?? title.text; clip.title = title
                 commands.append(.updateClip(trackID: track.id, clip: clip))
             }
         }
-        if commands.isEmpty && !toAll, let track = project.sequence.tracks.first(where: { $0.kind == .title }) {
-            var title = preset.title; title.text = "종현의 첫 영상"
+        if commands.isEmpty && !toAll, let track = writableTrack(.title) {
+            var title = TitleSizing.title(for: preset, width: project.sequence.width, height: project.sequence.height); title.text = "종현의 첫 영상"
             let clip = Clip(name: preset.name, start: MediaTime(seconds: playhead), duration: MediaTime(3, 1), title: title)
             commands.append(.addClip(trackID: track.id, clip: clip)); newSelection = clip.id
         }
@@ -526,27 +682,28 @@ final class EditorModel: ObservableObject {
         alert.addButton(withTitle: "저장"); alert.addButton(withTitle: "취소")
         guard alert.runModal() == .alertFirstButtonReturn, !field.stringValue.trimmingCharacters(in: .whitespaces).isEmpty else { return }
         var saved = title; saved.text = "종현의 이야기"
-        let preset = TitlePreset(id: UUID().uuidString, name: field.stringValue, category: "내 스타일", title: saved)
+        var preset = TitlePreset(id: UUID().uuidString, name: field.stringValue, category: "내 스타일", title: saved)
+        preset.referenceShortEdge = Double(min(project.sequence.width, project.sequence.height))
         do { let next = userTitlePresets + [preset]; try FileManager.default.createDirectory(at: Self.presetsURL.deletingLastPathComponent(), withIntermediateDirectories: true); try JSONEncoder().encode(next).write(to: Self.presetsURL, options: .atomic); userTitlePresets = next }
         catch { self.error = error.localizedDescription }
     }
     func importSRT() {
         guard !isExporting, !isImporting else { return }
         let panel = NSOpenPanel(); panel.allowedContentTypes = [UTType(filenameExtension: "srt") ?? .plainText]
-        guard panel.runModal() == .OK, let url = panel.url, let track = project.sequence.tracks.first(where: { $0.kind == .title }) else { return }
+        guard panel.runModal() == .OK, let url = panel.url, let track = writableTrack(.title) else { return }
         do {
             let cues = try SRTCodec.parse(SubtitleTextDecoder.decode(Data(contentsOf: url)))
-            let style = selected?.1.title ?? TitlePreset.builtIns[0].title
+            let style = selected?.1.title ?? TitleSizing.title(for: TitlePreset.builtIns[0], width: project.sequence.width, height: project.sequence.height)
             let commands: [EditCommand] = cues.map { cue in var title = style; title.text = cue.text; return .addClip(trackID: track.id, clip: Clip(name: "자막", start: cue.start, duration: cue.duration, title: title)) }
             if perform(.batch(commands)) { message = "SRT 자막 \(cues.count)개 추가 · 기존 영상 유지" }
         } catch { self.error = error.localizedDescription }
     }
     func exportSRT() {
-        guard !captionClips.isEmpty else { return }
+        guard !exportableCaptionClips.isEmpty else { error = "선택한 언어 범위에 자막이 없습니다."; return }
         let panel = NSSavePanel(); panel.allowedContentTypes = [UTType(filenameExtension: "srt") ?? .plainText]; panel.nameFieldStringValue = project.name + ".srt"
         guard panel.runModal() == .OK, let url = panel.url else { return }
         do {
-            let cues = captionClips.map { CaptionCue(id: $0.id, start: $0.start, duration: $0.duration, text: $0.title?.text ?? "") }
+            let cues = exportableCaptionClips.map { CaptionCue(id: $0.id, start: $0.start, duration: $0.duration, text: $0.title?.text ?? "") }
             try SRTCodec.serialize(cues).write(to: url, atomically: true, encoding: .utf8)
             message = "SRT 저장됨 · 스타일은 프로젝트 문서에 별도로 보존됩니다."
         } catch { self.error = error.localizedDescription }
@@ -556,6 +713,14 @@ final class EditorModel: ObservableObject {
     func setFormat(width: Int, height: Int, frameRate newRate: FrameRate) {
         guard !busyDocument else { return }
         var sequence = project.sequence
+        let oldEdge = min(sequence.width, sequence.height)
+        for ti in sequence.tracks.indices {
+            for ci in sequence.tracks[ti].clips.indices {
+                if let title = sequence.tracks[ti].clips[ci].title {
+                    sequence.tracks[ti].clips[ci].title = TitleSizing.resized(title, from: oldEdge, to: min(width, height))
+                }
+            }
+        }
         sequence.width = width; sequence.height = height; sequence.frameRate = newRate
         guard perform(.replaceSequence(sequence)) else { return }
         outputBitRate = ExportJob.recommendedBitRate(width: width, height: height, fps: newRate.fps,
@@ -576,6 +741,14 @@ final class EditorModel: ObservableObject {
             do {
                 var replacement = try await MediaImporter.inspect(url: url)
                 guard replacement.kind == original.kind, replacement.supported else { throw ProjectError("원본과 같은 종류의 지원 미디어를 선택하세요.") }
+                replacement.contentHash = try await FileIdentity.sha256(url)
+                let expected = original.contentHash ?? original.provenance?.sha256
+                if expected == nil || expected != replacement.contentHash {
+                    let alert = NSAlert(); alert.messageText = expected == nil ? "동일한 원본인지 확인할 정보가 없습니다." : "기존 원본과 내용이 다른 파일입니다."
+                    alert.informativeText = "\(original.name) → \(replacement.name)\n길이 \(String(format: "%.2f", original.duration.seconds))초 → \(String(format: "%.2f", replacement.duration.seconds))초\n새 파일로 교체할까요?"
+                    alert.addButton(withTitle: "다른 원본으로 교체"); alert.addButton(withTitle: "취소")
+                    guard alert.runModal() == .alertFirstButtonReturn else { return }
+                }
                 replacement.id = original.id; replacement.relativePath = nil
                 if let provenance = original.provenance, !provenance.sha256.isEmpty {
                     let fingerprint = try await Task.detached { try Self.fileSHA256(url) }.value

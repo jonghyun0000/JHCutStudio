@@ -9,5 +9,5 @@ JHCUT_SDK_PATH="${JHCUT_SDK:-$DEVELOPER_DIR/SDKs/MacOSX26.5.sdk}"
 if [[ ! -d "$JHCUT_SDK_PATH" ]]; then JHCUT_SDK_PATH="$(xcrun --show-sdk-path)"; fi
 "$JHCUT_TOOLCHAIN/swiftc" -swift-version 5 -target "$(uname -m)-apple-macos14.0" -sdk "$JHCUT_SDK_PATH" -O -g -parse-as-library -D AUTO_CAPTION_PROBE \
   -I Build -L Build -lJHCutCore -Xlinker -rpath -Xlinker @executable_path \
-  App/EditorModel.swift App/EditorProductivity.swift Tests/AutoCaptionProbe.swift -o Build/AutoCaptionProbe
+  App/EditorModel.swift App/EditorProductivity.swift App/EditorWorkflow.swift Tests/AutoCaptionProbe.swift -o Build/AutoCaptionProbe
 exec Build/AutoCaptionProbe "${1:-$JHCUT_ROOT/Artifacts/Logo-Captions}"

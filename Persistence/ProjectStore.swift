@@ -2,6 +2,8 @@ import Foundation
 
 public enum ProjectStore {
     public static func backupURL(for documentURL: URL) -> URL { documentURL.appendingPathExtension("backup") }
+    /// Copy of the document as it was before 0.7-only fields were first saved into it.
+    public static func legacyCopyURL(for documentURL: URL) -> URL { documentURL.appendingPathExtension("before-0.7") }
 
     /// Writes a validated JSON document atomically. The previous valid bytes are kept in .backup.
     /// Source files are referenced only and are never copied, modified, or removed.
@@ -32,6 +34,12 @@ public enum ProjectStore {
             let priorProject = try JSONDecoder().decode(Project.self, from: previous)
             try ProjectValidator.validate(priorProject)
             try previous.write(to: backupURL(for: documentURL), options: .atomic)
+            // First save that adds 0.7-only fields: keep the older file permanently, because a 0.6
+            // app cannot open the new one and .backup is replaced on the next save.
+            let legacy = legacyCopyURL(for: documentURL)
+            if !FileManager.default.fileExists(atPath: legacy.path), !DocumentCompatibility.usesKeysIntroducedIn07(previous), DocumentCompatibility.usesKeysIntroducedIn07(data) {
+                try previous.write(to: legacy, options: .withoutOverwriting)
+            }
         }
         try data.write(to: documentURL, options: .atomic)
     }

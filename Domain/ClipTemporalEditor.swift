@@ -8,7 +8,7 @@ public enum ClipTemporalEditor {
         guard newStart >= .zero, newSourceStart >= .zero, newDuration > .zero else { throw ProjectError("트림의 시작·원본 시작은 0 이상이고 길이는 0보다 커야 합니다.") }
         guard temporalSource || newSourceStart == .zero else { throw ProjectError("제목·정지 이미지의 원본 시작은 0이어야 합니다.") }
         var result = original; result.start = newStart; result.sourceStart = newSourceStart; result.duration = newDuration
-        let hasAnimation = !(original.keyframes ?? []).isEmpty || [original.fadeIn, original.fadeOut, original.audioFadeIn, original.audioFadeOut].contains { ($0 ?? .zero) > .zero }
+        let hasAnimation = !(original.ducking ?? []).isEmpty || !(original.keyframes ?? []).isEmpty || [original.fadeIn, original.fadeOut, original.audioFadeIn, original.audioFadeOut].contains { ($0 ?? .zero) > .zero }
         guard hasAnimation else { return result }
         let rate = original.playbackRate ?? PlaybackRate()
         let offset = try animationOffset ?? (temporalSource ? newSourceStart.subtracting(original.sourceStart).scaled(numerator: rate.denominator, denominator: rate.numerator) : newStart.subtracting(original.start))
@@ -25,7 +25,7 @@ public enum ClipTemporalEditor {
                 if local >= .zero, local <= newDuration { times.insert(local) }
             }
         }
-        var boundaries = (original.keyframes ?? []).map(\.time) + [.zero, original.duration]
+        var boundaries = (original.ducking ?? []).map(\.time) + (original.keyframes ?? []).map(\.time) + [.zero, original.duration]
         boundaries += [original.fadeIn, original.audioFadeIn].compactMap { $0 }
         for fade in [original.fadeOut, original.audioFadeOut].compactMap({ $0 }) { boundaries.append(try original.duration.subtracting(fade)) }
         for boundary in boundaries {
@@ -38,9 +38,10 @@ public enum ClipTemporalEditor {
             var evaluated = original.evaluatedKeyframe(at: originalTime)
             evaluated.time = local; evaluated.interpolation = .linear
             evaluated.transform.opacity *= envelope(at: originalTime, duration: original.duration, fadeIn: original.fadeIn, fadeOut: original.fadeOut)
-            evaluated.volume *= envelope(at: originalTime, duration: original.duration, fadeIn: original.audioFadeIn, fadeOut: original.audioFadeOut)
+            evaluated.volume *= AudioAutomation.gain(original.ducking, at: originalTime) * envelope(at: originalTime, duration: original.duration, fadeIn: original.audioFadeIn, fadeOut: original.audioFadeOut)
             return evaluated
         }
+        result.ducking = nil
         result.keyframes = keys
         result.transform = keys[0].transform; result.volume = keys[0].volume
         result.fadeIn = nil; result.fadeOut = nil; result.audioFadeIn = nil; result.audioFadeOut = nil

@@ -66,10 +66,10 @@ struct EditorView: View {
             Button { model.save() } label: { Image(systemName: "square.and.arrow.down") }
                 .jhIconLabel("프로젝트 저장", hint: "⌘S")
             // Toolbars collapse a Label to its icon by default; the one destination action keeps its text.
-            Button { model.exportVideo() } label: { Label("MP4 출력", systemImage: "square.and.arrow.up") }
+            Button { model.exportVideo() } label: { Label("영상 출력", systemImage: "square.and.arrow.up") }
                 .labelStyle(.titleAndIcon)
                 .buttonStyle(.jhPrimary)
-                .accessibilityHint(Text("현재 타임라인을 MP4 파일로 출력합니다"))
+                .accessibilityHint(Text("선택한 파일 형식으로 현재 타임라인을 출력합니다"))
                 .disabled(model.plan == nil || model.isBuilding || model.busyDocument)
         }
     }
@@ -133,6 +133,7 @@ struct EditorView: View {
                 .font(.system(size: 30, weight: .ultraLight)).foregroundStyle(JH.Palette.accent)
                 .accessibilityHidden(true)
             Text("촬영한 영상을 여기로 끌어오세요").font(JH.Font.label)
+            Toggle("가져온 영상 자동 자막", isOn: $model.autoCaptionImportedVideos).font(JH.Font.caption).disabled(model.busyDocument)
             Text("SDR H.264 · HEVC · ProRes · 사진 · 오디오\n모든 편집은 이 Mac에서 처리됩니다.")
                 .font(JH.Font.micro).foregroundStyle(.secondary).multilineTextAlignment(.center)
         }
@@ -257,44 +258,7 @@ struct EditorView: View {
         }
     }
 
-    /// Floating glass transport, the way Apple's media apps park controls over the image.
-    private var transport: some View {
-        HStack(spacing: JH.Space.l) {
-            Text(timecode(model.playhead, fps: model.fps))
-                .font(JH.Font.timecode).foregroundStyle(JH.Palette.accent)
-                .frame(minWidth: 92, alignment: .leading)
-                .accessibilityLabel(Text("현재 위치 \(spokenTimecode(model.playhead, fps: model.fps))"))
-
-            HStack(spacing: JH.Space.m) {
-                Button { model.seek(0) } label: { Image(systemName: "backward.end.fill") }
-                    .jhIconLabel("처음으로")
-                Button { model.seek(model.playhead - model.frameStep) } label: { Image(systemName: "backward.frame.fill") }
-                    .jhIconLabel("이전 프레임", hint: "왼쪽 화살표")
-                Button { model.togglePlay() } label: {
-                    Image(systemName: model.playing ? "pause.circle.fill" : "play.circle.fill")
-                        .font(.system(size: 30)).foregroundStyle(JH.Palette.accent)
-                        .frame(width: 44, height: 44).contentShape(Rectangle())
-                }
-                .jhIconLabel(model.playing ? "일시정지" : "재생", hint: "스페이스바")
-                Button { model.seek(model.playhead + model.frameStep) } label: { Image(systemName: "forward.frame.fill") }
-                    .jhIconLabel("다음 프레임", hint: "오른쪽 화살표")
-            }
-            .font(.system(size: 14))
-
-            Text(timecode(model.project.sequence.duration.seconds, fps: model.fps))
-                .font(JH.Font.numeric(11)).foregroundStyle(.secondary)
-                .frame(minWidth: 92, alignment: .trailing)
-                .accessibilityLabel(Text("전체 길이 \(spokenTimecode(model.project.sequence.duration.seconds, fps: model.fps))"))
-        }
-        .buttonStyle(.plain)
-        .padding(.horizontal, JH.Space.l)
-        .padding(.vertical, JH.Space.s)
-        .jhSurface(.floating, in: Capsule(), interactive: true)
-        .padding(.vertical, JH.Space.m)
-        .disabled(!model.playing && (model.isBuilding || model.isExporting))
-        .accessibilityElement(children: .contain)
-        .accessibilityLabel(Text("재생 컨트롤"))
-    }
+    private var transport: some View { PlaybackTransport(model: model) }
 
     // MARK: Inspector
 
@@ -466,7 +430,7 @@ struct EditorView: View {
         HStack(spacing: JH.Space.s) {
             Circle().fill(statusColor).frame(width: 5, height: 5).accessibilityHidden(true)
             if model.isExporting {
-                Text("MP4 출력 중 \(Int(model.exportProgress * 100))%")
+                Text("영상 출력 중 \(Int(model.exportProgress * 100))%")
                 ProgressView(value: model.exportProgress).frame(width: 150)
                     .accessibilityLabel(Text("출력 진행률"))
                 Button("취소") { model.cancelExport() }.buttonStyle(.borderless)
@@ -605,5 +569,48 @@ struct MediaRow: View {
         asset.kind == .image
             ? "\(asset.codec) · \(asset.width)×\(asset.height)"
             : String(format: "%.2f초 · %@", asset.duration.seconds, asset.codec)
+    }
+}
+
+private struct PlaybackTransport: View {
+    @ObservedObject var model: EditorModel
+    @ObservedObject var clock: PlaybackClock
+    init(model: EditorModel) { self.model = model; self.clock = model.playbackClock }
+    var body: some View {
+        HStack(spacing: JH.Space.l) {
+            Text(timecode(model.playhead, fps: model.fps))
+                .font(JH.Font.timecode).foregroundStyle(JH.Palette.accent)
+                .frame(minWidth: 92, alignment: .leading)
+                .accessibilityLabel(Text("현재 위치 \(spokenTimecode(model.playhead, fps: model.fps))"))
+
+            HStack(spacing: JH.Space.m) {
+                Button { model.seek(0) } label: { Image(systemName: "backward.end.fill") }
+                    .jhIconLabel("처음으로")
+                Button { model.seek(model.playhead - model.frameStep) } label: { Image(systemName: "backward.frame.fill") }
+                    .jhIconLabel("이전 프레임", hint: "왼쪽 화살표")
+                Button { model.togglePlay() } label: {
+                    Image(systemName: model.playing ? "pause.circle.fill" : "play.circle.fill")
+                        .font(.system(size: 30)).foregroundStyle(JH.Palette.accent)
+                        .frame(width: 44, height: 44).contentShape(Rectangle())
+                }
+                .jhIconLabel(model.playing ? "일시정지" : "재생", hint: "스페이스바")
+                Button { model.seek(model.playhead + model.frameStep) } label: { Image(systemName: "forward.frame.fill") }
+                    .jhIconLabel("다음 프레임", hint: "오른쪽 화살표")
+            }
+            .font(.system(size: 14))
+
+            Text(timecode(model.project.sequence.duration.seconds, fps: model.fps))
+                .font(JH.Font.numeric(11)).foregroundStyle(.secondary)
+                .frame(minWidth: 92, alignment: .trailing)
+                .accessibilityLabel(Text("전체 길이 \(spokenTimecode(model.project.sequence.duration.seconds, fps: model.fps))"))
+        }
+        .buttonStyle(.plain)
+        .padding(.horizontal, JH.Space.l)
+        .padding(.vertical, JH.Space.s)
+        .jhSurface(.floating, in: Capsule(), interactive: true)
+        .padding(.vertical, JH.Space.m)
+        .disabled(!model.playing && (model.isBuilding || model.isExporting))
+        .accessibilityElement(children: .contain)
+        .accessibilityLabel(Text("재생 컨트롤"))
     }
 }

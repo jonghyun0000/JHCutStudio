@@ -31,7 +31,7 @@ public final class RenderPlan: @unchecked Sendable {
 }
 
 public enum TimelineRenderer {
-    public static func build(project: Project, documentURL: URL? = nil, mediaURLOverrides: [UUID: URL] = [:]) async throws -> RenderPlan {
+    public static func build(project: Project, documentURL: URL? = nil, mediaURLOverrides: [UUID: URL] = [:], cacheInspection: Bool = false) async throws -> RenderPlan {
         try ProjectValidator.validate(project)
         let sequence = project.sequence
         guard sequence.duration > .zero else { throw MediaEngineError.invalid("타임라인에 클립을 추가하세요.") }
@@ -63,7 +63,7 @@ public enum TimelineRenderer {
                 try Task.checkCancellation()
                 let url = asset.resolvedURL(relativeTo: documentURL)
                 if url.startAccessingSecurityScopedResource() { scopedURLs.append(url) }
-                let actual = try await MediaImporter.inspect(url: url)
+                let actual = try await (cacheInspection ? InspectionCache.shared.inspect(url) : MediaImporter.inspect(url: url))
                 guard actual.supported else { throw MediaEngineError.unsupported("\(asset.name): \(actual.issue ?? "지원하지 않는 미디어")") }
                 guard actual.kind == asset.kind else { throw MediaEngineError.invalid("미디어 종류가 바뀌었습니다: \(asset.name)") }
                 inspected[asset.id] = actual
@@ -137,12 +137,21 @@ public enum TimelineRenderer {
                             throw MediaEngineError.failed("영상 트랙을 만들 수 없습니다: \(clip.name)")
                         }
                         let availableVideo = try await source.load(.timeRange)
-                        guard sourceRange.start >= availableVideo.start, sourceRange.end <= availableVideo.end else {
+                        // Containers often end the video track a few microseconds before the audio,
+                        // and the asset (hence a full-length clip) takes the longer one. A shortfall
+                        // under one frame is absorbed by stretching the available video over the clip;
+                        // anything longer is still refused.
+                        var videoRange = sourceRange
+                        if sourceRange.start >= availableVideo.start, sourceRange.end > availableVideo.end,
+                           sourceRange.end - availableVideo.end < frameDuration, availableVideo.end > sourceRange.start {
+                            videoRange = CMTimeRange(start: sourceRange.start, end: availableVideo.end)
+                        }
+                        guard videoRange.start >= availableVideo.start, videoRange.end <= availableVideo.end else {
                             throw MediaEngineError.invalid("영상 또는 프록시가 요청한 원본 프레임 범위를 포함하지 않습니다: \(clip.name)")
                         }
-                        try target.insertTimeRange(sourceRange, of: source, at: start)
-                        if clip.sourceDuration != clip.duration {
-                            target.scaleTimeRange(CMTimeRange(start: start, duration: clip.sourceDuration.cmTime), toDuration: clip.duration.cmTime)
+                        try target.insertTimeRange(videoRange, of: source, at: start)
+                        if videoRange.duration != clip.duration.cmTime {
+                            target.scaleTimeRange(CMTimeRange(start: start, duration: videoRange.duration), toDuration: clip.duration.cmTime)
                         }
                         let size = try await source.load(.naturalSize)
                         let preferred = try await source.load(.preferredTransform)
@@ -334,15 +343,17 @@ private actor BlackCarrier {
             CVPixelBufferLockBaseAddress(buffer, [])
             memset(CVPixelBufferGetBaseAddress(buffer), 0, CVPixelBufferGetBytesPerRow(buffer) * 16)
             CVPixelBufferUnlockBaseAddress(buffer, [])
+            defer { if writer.status == .writing { writer.cancelWriting() } }
             for frame in 0..<unitFrames {
-                while !input.isReadyForMoreMediaData && writer.status == .writing { Thread.sleep(forTimeInterval: 0.001) }
+                try Task.checkCancellation()
+                while !input.isReadyForMoreMediaData && writer.status == .writing { try Task.checkCancellation(); Thread.sleep(forTimeInterval: 0.001) }
                 guard adaptor.append(buffer, withPresentationTime: CMTimeMultiply(frameDuration, multiplier: Int32(frame))) else { throw writer.error ?? MediaEngineError.failed("배경 프레임 쓰기 실패") }
             }
             input.markAsFinished()
             writer.endSession(atSourceTime: CMTimeMultiply(frameDuration, multiplier: Int32(unitFrames)))
             let done = DispatchSemaphore(value: 0)
             writer.finishWriting { done.signal() }
-            done.wait()
+            while done.wait(timeout: .now() + 0.05) == .timedOut { try Task.checkCancellation() }
             guard writer.status == .completed else { throw writer.error ?? MediaEngineError.failed("배경 생성 실패") }
         } catch {
             try? FileManager.default.removeItem(at: url)

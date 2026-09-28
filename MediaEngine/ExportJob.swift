@@ -8,6 +8,12 @@ public final class ExportJob: @unchecked Sendable {
     private var cancelled = false
     private var started = false
     private let minimumFreeSpaceOverride: Int64?
+    public enum Codec: String, CaseIterable, Codable, Sendable { case h264, hevc, proRes422
+        public var label: String { switch self { case .h264: return "H.264 · 호환성"; case .hevc: return "HEVC · 고효율"; case .proRes422: return "ProRes 422 · 편집용" } }
+        public var fileExtension: String { self == .proRes422 ? "mov" : "mp4" }
+        var avCodec: AVVideoCodecType { switch self { case .h264: return .h264; case .hevc: return .hevc; case .proRes422: return .proRes422 } }
+    }
+    private let codec: Codec
     private let videoBitRate: Int
     /// Tiers, not a free-form number: the encoder is validated at these rates only. The upper tiers
     /// exist for 4K, where 8Mbps is not a usable picture.
@@ -29,7 +35,7 @@ public final class ExportJob: @unchecked Sendable {
         return supportedVideoBitRates.min { abs(Double($0) - target) < abs(Double($1) - target) } ?? 8_000_000
     }
     /// Raises the preflight threshold for controlled low-space tests; it never bypasses the normal minimum.
-    public init(minimumFreeSpaceOverride: Int64? = nil, videoBitRate: Int = 8_000_000) { self.minimumFreeSpaceOverride = minimumFreeSpaceOverride; self.videoBitRate = videoBitRate }
+    public init(minimumFreeSpaceOverride: Int64? = nil, videoBitRate: Int = 8_000_000, codec: Codec = .h264) { self.codec = codec; self.minimumFreeSpaceOverride = minimumFreeSpaceOverride; self.videoBitRate = videoBitRate }
     public func cancel() { lock.lock(); cancelled = true; lock.unlock() }
     private var isCancelled: Bool { lock.lock(); defer { lock.unlock() }; return cancelled }
     private func begin() throws {
@@ -56,7 +62,7 @@ public final class ExportJob: @unchecked Sendable {
     private func run(plan: RenderPlan, to destination: URL, progress: @escaping (Double) -> Void) throws {
         let fileManager = FileManager.default
         let directory = destination.deletingLastPathComponent()
-        guard destination.isFileURL, destination.pathExtension.lowercased() == "mp4" else { throw MediaEngineError.invalid("출력 파일은 .mp4여야 합니다.") }
+        guard destination.isFileURL, destination.pathExtension.lowercased() == codec.fileExtension else { throw MediaEngineError.invalid("선택한 형식의 출력 확장자는 .\(codec.fileExtension)입니다.") }
         guard !fileManager.fileExists(atPath: destination.path) else { throw MediaEngineError.failed("기존 파일은 덮어쓰지 않습니다: \(destination.lastPathComponent)") }
         var isDirectory: ObjCBool = false
         guard fileManager.fileExists(atPath: directory.path, isDirectory: &isDirectory), isDirectory.boolValue,
@@ -67,7 +73,8 @@ public final class ExportJob: @unchecked Sendable {
         let filesystemFree = (filesystem[.systemFreeSize] as? NSNumber)?.int64Value
         let importantFree = resources?.volumeAvailableCapacityForImportantUsage
         let availableFree = (importantFree ?? 0) > 0 ? importantFree : filesystemFree
-        let estimate = max(Int64(plan.duration.seconds * Double(videoBitRate + 192_000) / 8 * 1.2) + 64 * 1_024 * 1_024, minimumFreeSpaceOverride ?? 0)
+        let estimatedRate = codec == .proRes422 ? max(videoBitRate, Int(plan.videoComposition.renderSize.width * plan.videoComposition.renderSize.height * 4 / plan.frameDuration.seconds)) : videoBitRate
+        let estimate = max(Int64(plan.duration.seconds * Double(estimatedRate + 192_000) / 8 * 1.2) + 64 * 1_024 * 1_024, minimumFreeSpaceOverride ?? 0)
         if let available = availableFree, available < estimate {
             throw MediaEngineError.failed("출력 공간이 부족합니다. 최소 예상 필요 공간: \(estimate / 1_048_576)MB, 사용 가능: \(available / 1_048_576)MB")
         }
@@ -75,7 +82,7 @@ public final class ExportJob: @unchecked Sendable {
         // Keep AVAssetWriter's asynchronous .sb-* sidecars inside this job's private scratch directory.
         let scratch = directory.appendingPathComponent(".JHCut-export-\(UUID().uuidString).partial", isDirectory: true)
         try fileManager.createDirectory(at: scratch, withIntermediateDirectories: false)
-        let temporary = scratch.appendingPathComponent("render.partial.mp4")
+        let temporary = scratch.appendingPathComponent("render.partial." + codec.fileExtension)
         defer { try? fileManager.removeItem(at: scratch) }
         let reader = try AVAssetReader(asset: plan.composition)
         reader.timeRange = CMTimeRange(start: .zero, duration: plan.duration)
@@ -99,20 +106,22 @@ public final class ExportJob: @unchecked Sendable {
             guard reader.canAdd(output) else { throw MediaEngineError.failed("오디오 믹서 생성에 실패했습니다.") }
             reader.add(output); audioOutput = output
         }
-        let writer = try AVAssetWriter(outputURL: temporary, fileType: .mp4)
+        let writer = try AVAssetWriter(outputURL: temporary, fileType: codec == .proRes422 ? .mov : .mp4)
         writer.shouldOptimizeForNetworkUse = true
         let frameRate = 1.0 / plan.frameDuration.seconds
-        let videoInput = AVAssetWriterInput(mediaType: .video, outputSettings: [
-            AVVideoCodecKey: AVVideoCodecType.h264,
+        var videoSettings: [String: Any] = [AVVideoCodecKey: codec.avCodec,
             AVVideoWidthKey: Int(plan.videoComposition.renderSize.width), AVVideoHeightKey: Int(plan.videoComposition.renderSize.height),
             AVVideoColorPropertiesKey: [AVVideoColorPrimariesKey: AVVideoColorPrimaries_ITU_R_709_2,
-                                        AVVideoTransferFunctionKey: AVVideoTransferFunction_ITU_R_709_2,
-                                        AVVideoYCbCrMatrixKey: AVVideoYCbCrMatrix_ITU_R_709_2],
-            AVVideoCompressionPropertiesKey: [AVVideoAverageBitRateKey: videoBitRate, AVVideoExpectedSourceFrameRateKey: frameRate,
-                                              AVVideoMaxKeyFrameIntervalKey: Int(frameRate), AVVideoProfileLevelKey: AVVideoProfileLevelH264HighAutoLevel,
-                                              AVVideoAllowFrameReorderingKey: false]])
+                AVVideoTransferFunctionKey: AVVideoTransferFunction_ITU_R_709_2, AVVideoYCbCrMatrixKey: AVVideoYCbCrMatrix_ITU_R_709_2]]
+        if codec != .proRes422 {
+            var compression: [String: Any] = [AVVideoAverageBitRateKey: videoBitRate, AVVideoExpectedSourceFrameRateKey: frameRate,
+                AVVideoMaxKeyFrameIntervalKey: Int(frameRate), AVVideoAllowFrameReorderingKey: false]
+            if codec == .h264 { compression[AVVideoProfileLevelKey] = AVVideoProfileLevelH264HighAutoLevel }
+            videoSettings[AVVideoCompressionPropertiesKey] = compression
+        }
+        let videoInput = AVAssetWriterInput(mediaType: .video, outputSettings: videoSettings)
         videoInput.expectsMediaDataInRealTime = false
-        guard writer.canAdd(videoInput) else { throw MediaEngineError.failed("H.264 인코더를 만들 수 없습니다.") }
+        guard writer.canAdd(videoInput) else { throw MediaEngineError.failed("선택한 영상 인코더를 만들 수 없습니다.") }
         writer.add(videoInput)
         var audioInput: AVAssetWriterInput?
         if audioOutput != nil {

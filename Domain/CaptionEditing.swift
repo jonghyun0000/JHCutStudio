@@ -2,18 +2,75 @@ import Foundation
 import CoreFoundation
 
 public enum CaptionEditing {
+    /// Turns engine segments into readable subtitle sentences while preserving source timing.
+    /// A cue is split only at whitespace/punctuation boundaries; timing is distributed by
+    /// character weight so a long sentence does not display too quickly.
+    public static func sentenceCues(_ cues: [CaptionCue], maxCharacters: Int = 42, maxDuration: Double = 7.0) -> [CaptionCue] {
+        guard maxCharacters >= 8, maxDuration > 0 else { return cues }
+        return cues.flatMap { cue -> [CaptionCue] in
+            let text = cue.text.trimmingCharacters(in: .whitespacesAndNewlines)
+            // Whisper sometimes emits a segment that is only a quote mark or dash.
+            guard text.unicodeScalars.contains(where: { CharacterSet.alphanumerics.contains($0) }) else { return [] }
+            let units = splitSentence(text, maxCharacters: maxCharacters)
+            guard units.count > 1 || cue.duration.seconds <= maxDuration else {
+                return [cue]
+            }
+            let weights = units.map { max(1, normalizedLength($0)) }
+            let total = max(1, weights.reduce(0, +))
+            var cursor = cue.start
+            return units.enumerated().compactMap { index, unit -> CaptionCue? in
+                let remaining = (cue.start + cue.duration) - cursor
+                guard remaining > .zero else { return nil }
+                let fraction = Double(weights[index]) / Double(total)
+                let proposed = index == units.count - 1 ? remaining : MediaTime(seconds: cue.duration.seconds * fraction)
+                let duration = proposed > .zero ? proposed : .zero
+                defer { cursor = cursor + duration }
+                return duration > .zero ? CaptionCue(id: index == 0 ? cue.id : UUID(), start: cursor, duration: duration, text: unit) : nil
+            }
+        }
+    }
+
+    private static func splitSentence(_ text: String, maxCharacters: Int) -> [String] {
+        var result: [String] = []
+        var current = ""
+        func flush() {
+            let value = current.trimmingCharacters(in: .whitespacesAndNewlines)
+            // A fragment with no letter or digit (a stray quote or dash) is not a readable caption.
+            if value.unicodeScalars.contains(where: { CharacterSet.alphanumerics.contains($0) }) { result.append(value) }
+            else if let last = result.popLast() { result.append(last + value) }
+            current = ""
+        }
+        for character in text.replacingOccurrences(of: "\n", with: " ") {
+            current.append(character)
+            let punctuation = ".!?。！？、,".contains(character)
+            if punctuation || current.count >= maxCharacters {
+                // Prefer a punctuation boundary. For long Japanese text without spaces,
+                // split at the configured character limit while retaining the character.
+                if punctuation || current.count >= maxCharacters { flush() }
+            }
+        }
+        flush()
+        return result.isEmpty ? [text] : result
+    }
+
+    private static func normalizedLength(_ text: String) -> Int {
+        text.unicodeScalars.filter { !CharacterSet.whitespacesAndNewlines.contains($0) }.count
+    }
+
     /// Recognition timestamps are absolute source positions. Clamp before mapping through trim/rate.
     public static func automaticClips(cues: [CaptionCue], source: Clip, style: Title) -> [Clip] {
         let rate = source.playbackRate ?? PlaybackRate()
         let sourceEnd = source.sourceStart + source.sourceDuration
-        return cues.sorted { $0.start < $1.start }.compactMap { cue in
+        return sentenceCues(cues).sorted { $0.start < $1.start }.compactMap { cue in
             let text = cue.text.trimmingCharacters(in: .whitespacesAndNewlines)
             let begin = max(source.sourceStart, cue.start)
             let end = min(sourceEnd, cue.start + cue.duration)
             guard !text.isEmpty, end > begin else { return nil }
             var title = style; title.text = text
-            return Clip(name: "자동 자막", start: source.start + rate.timelineDuration(for: begin - source.sourceStart),
+            var clip = Clip(name: "자동 자막", start: source.start + rate.timelineDuration(for: begin - source.sourceStart),
                         duration: rate.timelineDuration(for: end - begin), title: title)
+            clip.connection = ClipConnection(parentID: source.id, sourceStart: begin, sourceDuration: end - begin, generatedText: text)
+            return clip
         }
     }
     /// Caller supplies adjacent title clips in timeline order. A gap is intentionally covered
@@ -40,6 +97,58 @@ public enum CaptionEditing {
             _ = try clip.start.adding(clip.duration)
             return clip
         }
+    }
+}
+
+/// One set of edits applied to many captions at once. nil fields are left unchanged.
+public struct CaptionBatchChange: Equatable, Sendable {
+    public var x: Double?, y: Double?, fontSize: Double?
+    public var colorHex: String?, strokeHex: String?, strokeWidth: Double?
+    public var backgroundHex: String?, backgroundOpacity: Double?, maxLines: Int?
+    /// Moves the start while keeping the end (positive = later).
+    public var startOffset: MediaTime?
+    /// Moves the end while keeping the start (positive = later).
+    public var endOffset: MediaTime?
+    public init() {}
+    public var isEmpty: Bool { self == CaptionBatchChange() }
+}
+
+public enum CaptionBatchEditing {
+    public static let minimumDuration = MediaTime(1, 10)
+    private static func hex(_ value: String?) throws -> String? {
+        guard let value else { return nil }
+        let v = value.trimmingCharacters(in: CharacterSet(charactersIn: "# ")).uppercased()
+        guard v.count == 6, v.allSatisfy(\.isHexDigit) else { throw ProjectError("색상은 6자리 RRGGBB로 입력하세요: \(value)") }
+        return v
+    }
+    /// Applies `change` to one caption. Timing edits keep the other edge fixed and refuse a
+    /// result shorter than 0.1 s or starting before zero rather than clamping it silently.
+    public static func applied(_ change: CaptionBatchChange, to original: Clip) throws -> Clip {
+        guard original.title != nil else { throw ProjectError("자막 클립만 일괄 편집할 수 있습니다.") }
+        var clip = original
+        if let x = change.x { guard (0...1).contains(x) else { throw ProjectError("가로 위치는 0~1입니다.") }; clip.title?.x = x }
+        if let y = change.y { guard (0...1).contains(y) else { throw ProjectError("세로 위치는 0~1입니다.") }; clip.title?.y = y }
+        if let size = change.fontSize { guard size >= 8, size <= 400 else { throw ProjectError("글자 크기는 8~400입니다.") }; clip.title?.fontSize = size }
+        if let color = try hex(change.colorHex) { clip.title?.colorHex = color }
+        let touchesStyle = change.strokeHex != nil || change.strokeWidth != nil || change.backgroundHex != nil || change.backgroundOpacity != nil || change.maxLines != nil
+        if touchesStyle {
+            var style = clip.title?.style ?? TextStyle()
+            if let v = try hex(change.strokeHex) { style.strokeHex = v }
+            if let v = change.strokeWidth { guard (0...50).contains(v) else { throw ProjectError("외곽선은 0~50입니다.") }; style.strokeWidth = v }
+            if let v = try hex(change.backgroundHex) { style.backgroundHex = v }
+            if let v = change.backgroundOpacity { guard (0...1).contains(v) else { throw ProjectError("배경 불투명도는 0~1입니다.") }; style.backgroundOpacity = v }
+            if let v = change.maxLines { guard (0...20).contains(v) else { throw ProjectError("최대 줄 수는 0~20입니다.") }; style.maxLines = v }
+            clip.title?.style = style
+        }
+        let end = try original.start.adding(original.duration)
+        var start = original.start, newEnd = end
+        if let offset = change.startOffset { start = try original.start.adding(offset) }
+        if let offset = change.endOffset { newEnd = try end.adding(offset) }
+        guard start >= .zero else { throw ProjectError("자막 시작이 0초보다 앞설 수 없습니다: \(original.title?.text.prefix(20) ?? "")") }
+        let duration = try newEnd.subtracting(start)
+        guard duration >= minimumDuration else { throw ProjectError("자막 길이가 0.1초보다 짧아집니다: \(original.title?.text.prefix(20) ?? "")") }
+        clip.start = start; clip.duration = duration
+        return clip
     }
 }
 

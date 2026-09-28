@@ -42,6 +42,13 @@ public struct VisualAdjustments: Codable, Equatable, Sendable {
     public var exposure: Double
     public var contrast: Double
     public var saturation: Double
+    public var temperature: Double?
+    public var tint: Double?
+    public var shadows: Double?
+    public var highlights: Double?
+    public var lut: CubeLUT?
+    public var ellipseMask: Bool?
+    public var greenScreen: Double?
     public var cropLeft: Double
     public var cropRight: Double
     public var cropTop: Double
@@ -99,6 +106,7 @@ public struct TitlePreset: Codable, Identifiable, Equatable, Sendable {
     public var name: String
     public var category: String
     public var title: Title
+    public var referenceShortEdge: Double?
     public init(id: String, name: String, category: String, title: Title) { self.id = id; self.name = name; self.category = category; self.title = title }
     public static let builtIns: [TitlePreset] = [
         preset("clean-caption", "기본 자막", "자막", "여기에 자막을 입력하세요", size: 58, y: 0.15, stroke: 3),

@@ -29,6 +29,30 @@ public enum SRTCodec {
             return CaptionCue(start: start, duration: try end.subtracting(start), text: body)
         }
     }
+    /// For recogniser output only (user files keep the strict `parse`). whisper.cpp can emit a
+    /// cue whose end equals its start; failing the whole recognition for that lost every caption.
+    /// A zero-length cue's text is appended to the previous cue (or given 0.3 s when first);
+    /// blocks with unreadable numbering/time or no text are skipped and counted.
+    public static func parseRecognizerOutput(_ text: String) -> (cues: [CaptionCue], repaired: Int, skipped: Int) {
+        var normalized = text.replacingOccurrences(of: "\r\n", with: "\n").replacingOccurrences(of: "\r", with: "\n")
+        if normalized.hasPrefix("\u{FEFF}") { normalized.removeFirst() }
+        normalized = normalized.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !normalized.isEmpty, let separator = try? NSRegularExpression(pattern: #"\n[ \t]*\n+"#) else { return ([], 0, 0) }
+        let blocks = separator.stringByReplacingMatches(in: normalized, range: NSRange(normalized.startIndex..., in: normalized), withTemplate: "\u{001E}").components(separatedBy: "\u{001E}")
+        var cues: [CaptionCue] = [], repaired = 0, skipped = 0
+        for block in blocks {
+            let lines = block.components(separatedBy: "\n")
+            let times = lines.count >= 3 ? lines[1].components(separatedBy: "-->") : []
+            guard times.count == 2, let start = try? parseTime(times[0]), let end = try? parseTime(times[1]) else { skipped += 1; continue }
+            let body = lines.dropFirst(2).joined(separator: "\n").trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !body.isEmpty else { skipped += 1; continue }
+            if end > start, let duration = try? end.subtracting(start) { cues.append(CaptionCue(start: start, duration: duration, text: body)); continue }
+            repaired += 1
+            if !cues.isEmpty { cues[cues.count - 1].text += (body.first?.isPunctuation == true ? "" : " ") + body }
+            else { cues.append(CaptionCue(start: start, duration: MediaTime(3, 10), text: body)) }
+        }
+        return (cues, repaired, skipped)
+    }
     public static func serialize(_ cues: [CaptionCue]) throws -> String {
         try cues.enumerated().map { index, cue in
             guard cue.start >= .zero, cue.duration > .zero, !cue.text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { throw ProjectError("자막의 시작·길이·본문을 확인하세요.") }

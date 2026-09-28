@@ -6,6 +6,8 @@ import JHCutCore
 
 struct TimelineSurface: NSViewRepresentable {
     @ObservedObject var model: EditorModel
+    @ObservedObject private var clock: PlaybackClock
+    init(model: EditorModel) { self.model = model; self.clock = model.playbackClock }
     final class Coordinator {
         var observer: NSObjectProtocol?
         deinit { if let observer { NotificationCenter.default.removeObserver(observer) } }
@@ -25,7 +27,8 @@ struct TimelineSurface: NSViewRepresentable {
     func updateNSView(_ view: NSScrollView, context: Context) {
         guard let canvas = view.documentView as? TimelineCanvas else { return }
         canvas.model = model
-        canvas.frame = NSRect(x: 0, y: 0, width: max(view.contentSize.width, (model.project.sequence.duration.seconds + 8) * model.zoom), height: max(28 + CGFloat(model.project.sequence.tracks.count) * 51, view.contentSize.height))
+        let nextFrame = NSRect(x: 0, y: 0, width: max(view.contentSize.width, (model.project.sequence.duration.seconds + 8) * model.zoom), height: max(28 + CGFloat(model.project.sequence.tracks.count) * 51, view.contentSize.height))
+        if canvas.frame != nextFrame { canvas.frame = nextFrame }
         if model.playing {
             let x = model.playhead * model.zoom, visible = view.contentView.bounds
             if x > visible.maxX - 30 || x < visible.minX {

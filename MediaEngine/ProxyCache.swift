@@ -2,6 +2,7 @@ import Foundation
 @preconcurrency import AVFoundation
 import CoreImage
 import CryptoKit
+import Darwin
 
 /// Disposable preview media. Project documents and exports continue to refer to the originals.
 /// One generation runs per cache instance. Cancellation is cooperative and removes its entire scratch directory.
@@ -23,6 +24,19 @@ public actor ProxyCache {
         self.directory = directory ?? FileManager.default.urls(for: .cachesDirectory, in: .userDomainMask)[0]
             .appendingPathComponent("JHCutStudio/Proxies", isDirectory: true)
         self.limitBytes = max(1, limitBytes)
+    }
+    /// Only our UUID scratch folders with an owner record whose process is gone are removable.
+    @discardableResult public func cleanAbandoned() throws -> Int {
+        guard !generating, FileManager.default.fileExists(atPath: directory.path) else { return 0 }
+        var removed = 0
+        for url in try FileManager.default.contentsOfDirectory(at: directory, includingPropertiesForKeys: [.isSymbolicLinkKey]) {
+            guard url.lastPathComponent.hasPrefix(".generating-"), UUID(uuidString: String(url.lastPathComponent.dropFirst(12))) != nil,
+                  (try url.resourceValues(forKeys: [.isSymbolicLinkKey]).isSymbolicLink) != true,
+                  let owner = try? String(contentsOf: url.appendingPathComponent("owner.pid"), encoding: .utf8),
+                  let pid = Int32(owner), pid > 0 else { continue }
+            if kill(pid, 0) == -1 && errno == ESRCH { try FileManager.default.removeItem(at: url); removed += 1 }
+        }
+        return removed
     }
     /// Pin the URLs used by the currently published player plan before generating more proxies.
     public func setProtectedURLs(_ urls: [URL]) { protectedPaths = Set(urls.map { $0.standardizedFileURL.path }) }
@@ -48,6 +62,7 @@ public actor ProxyCache {
         try Task.checkCancellation()
         if let hit = try cachedURL(for: sourceURL) { progress(1); return hit }
         guard !generating else { throw MediaEngineError.failed("이 캐시에서 이미 프록시를 생성 중입니다. 완료 후 다시 시도하세요.") }
+        _ = try cleanAbandoned()
         generating = true
         defer { generating = false }
         let scoped = sourceURL.startAccessingSecurityScopedResource()
@@ -74,6 +89,7 @@ public actor ProxyCache {
         let scratch = directory.appendingPathComponent(".generating-\(UUID().uuidString)", isDirectory: true)
         try FileManager.default.createDirectory(at: scratch, withIntermediateDirectories: false)
         defer { try? FileManager.default.removeItem(at: scratch) }
+        try String(ProcessInfo.processInfo.processIdentifier).write(to: scratch.appendingPathComponent("owner.pid"), atomically: true, encoding: .utf8)
         let temporary = scratch.appendingPathComponent("proxy.mp4")
         let cancellation = ProxyCancellation()
         let count = try await withTaskCancellationHandler(operation: {
