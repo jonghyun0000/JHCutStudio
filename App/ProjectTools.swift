@@ -73,8 +73,9 @@ struct ProjectTools: View {
                         Text("ProRes 422 · 편집용 MOV · 비트레이트 자동 · H.264/HEVC보다 큰 파일").font(JH.Font.micro)
                     } else { qualityControls }
                     Toggle("반복 구간만 출력", isOn: $model.exportRangeEnabled)
-                    TextField("시작 초", value: $model.loopStart, format: .number).textFieldStyle(.roundedBorder)
-                    TextField("끝 초", value: $model.loopEnd, format: .number).textFieldStyle(.roundedBorder)
+                    // Labelled: once they hold numbers the placeholders disappear.
+                    HStack { Text("시작 초").font(JH.Font.micro).frame(width: 48, alignment: .leading); TextField("시작 초", value: $model.loopStart, format: .number).textFieldStyle(.roundedBorder) }
+                    HStack { Text("끝 초").font(JH.Font.micro).frame(width: 48, alignment: .leading); TextField("끝 초", value: $model.loopEnd, format: .number).textFieldStyle(.roundedBorder) }
                     Button("출력 대기열에 추가…") { model.exportVideo() }
                     ForEach(model.exportQueue) { item in
                         HStack {

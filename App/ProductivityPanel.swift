@@ -97,7 +97,7 @@ struct SpeechTools: View {
                     ForEach(TranslationStyle.allCases, id: \.self) { Text($0.label).tag($0.rawValue) }
                 }
                 GlossaryEditor(model: model)
-                TextField("번역 용어집 · 원문=번역, 줄마다 입력", text: $model.translationGlossaryText)
+                TextField("빠른 용어집 · 이번 번역에만 · 원문=번역, 줄마다", text: $model.translationGlossaryText)
                     .textFieldStyle(.roundedBorder)
                 Button("원문 자막 전체 번역") { model.translateCaptionTracks() }.disabled(model.captionClips.isEmpty)
                 Button("원문 자막 표시") { model.showOriginalCaptionTracks() }.disabled(model.captionClips.isEmpty)

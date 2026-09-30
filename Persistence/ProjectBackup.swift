@@ -32,11 +32,13 @@ public enum ProjectBackup {
         try DocumentCompatibility.validate(bytes)
         let project = try JSONDecoder().decode(Project.self, from: bytes)
         try ProjectValidator.validate(project)
-        let stamp = ISO8601DateFormatter().string(from: Date()).replacingOccurrences(of: ":", with: "-")
+        // Local time, readable in Finder (e.g. “이름 2026-09-29 23.12.32”).
+        let formatter = DateFormatter(); formatter.locale = Locale(identifier: "en_US_POSIX"); formatter.dateFormat = "yyyy-MM-dd HH.mm.ss"
+        let stamp = formatter.string(from: Date())
         let name = documentURL.deletingPathExtension().lastPathComponent
-        var folder = root.appendingPathComponent("\(name)-\(stamp)", isDirectory: true)
+        var folder = root.appendingPathComponent("\(name) \(stamp)", isDirectory: true)
         var n = 2
-        while FileManager.default.fileExists(atPath: folder.path) { folder = root.appendingPathComponent("\(name)-\(stamp)-\(n)", isDirectory: true); n += 1 }
+        while FileManager.default.fileExists(atPath: folder.path) { folder = root.appendingPathComponent("\(name) \(stamp) (\(n))", isDirectory: true); n += 1 }
         let staging = root.appendingPathComponent(".staging-\(UUID().uuidString)", isDirectory: true)
         try FileManager.default.createDirectory(at: staging, withIntermediateDirectories: true)
         do {

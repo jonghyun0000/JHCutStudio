@@ -19,7 +19,14 @@ public enum CaptionTranslation {
         for source in CaptionLanguage.allCases {
             for target in CaptionLanguage.allCases where target != source {
                 let from = Locale.Language(identifier: source.rawValue), to = Locale.Language(identifier: target.rawValue)
-                if await LanguageAvailability().status(from: from, to: to) == .installed { pairs.append("\(source.label)→\(target.label)") }
+                // Same strategies translate() uses. Measured: on macOS 26.4+ the default strategy
+                // reported every pair as only “supported” while the high-fidelity models were installed.
+                var installed = false
+                if #available(macOS 26.4, *) {
+                    installed = await LanguageAvailability(preferredStrategy: .highFidelity).status(from: from, to: to) == .installed
+                    if !installed { installed = await LanguageAvailability(preferredStrategy: .lowLatency).status(from: from, to: to) == .installed }
+                } else { installed = await LanguageAvailability().status(from: from, to: to) == .installed }
+                if installed { pairs.append("\(source.label)→\(target.label)") }
             }
         }
         return pairs

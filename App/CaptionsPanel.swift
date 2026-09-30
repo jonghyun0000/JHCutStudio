@@ -54,10 +54,6 @@ struct CaptionsPanel: View {
                     Button("이전") { model.nextCaption(-1) }; Button("다음") { model.nextCaption(1) }
                     Button("반복 듣기") { model.loopSelection() }; Toggle("반복", isOn: $model.loopEnabled)
                 }.font(JH.Font.micro)
-                HStack {
-                    TextField("바꿀 문구", text: $replacement).textFieldStyle(.roundedBorder)
-                    Button("검색어 일괄 교정") { model.replaceCaptionText(find: query, replacement: replacement) }.disabled(query.isEmpty)
-                }.font(JH.Font.micro)
                 ScrollView {
                     LazyVStack(spacing: 7) {
                         ForEach(model.captionClips.filter { query.isEmpty || ($0.title?.text ?? "").localizedCaseInsensitiveContains(query) }) { clip in
@@ -74,14 +70,24 @@ struct CaptionsPanel: View {
                         }
                     }
                 }
-                HStack {
-                    Button("분할") { model.split() }.disabled(model.selected?.1.title == nil)
-                    Button("다음 자막과 합치기") { model.mergeNextCaption() }.disabled(model.selected?.1.title == nil)
-                }.font(JH.Font.caption).buttonStyle(.jhTool)
-                HStack {
-                    TextField("이동 초 · ±", text: $offset).textFieldStyle(.roundedBorder)
-                    Button("전체 시간 이동") {
-                        if let seconds = Double(offset) { model.offsetCaptions(seconds) } else { model.error = "이동 시간을 숫자로 입력하세요." }
+                // The list needs the height: less frequent tools are folded away (they used to leave
+                // the list about 40 px on a 870 px window, hiding each caption's warnings).
+                DisclosureGroup("찾아 바꾸기 · 분할 · 전체 시간 이동") {
+                    VStack(alignment: .leading, spacing: 8) {
+                    HStack {
+                        TextField("바꿀 문구", text: $replacement).textFieldStyle(.roundedBorder)
+                        Button("검색어 일괄 교정") { model.replaceCaptionText(find: query, replacement: replacement) }.disabled(query.isEmpty)
+                    }.font(JH.Font.micro)
+                    HStack {
+                        Button("분할") { model.split() }.disabled(model.selected?.1.title == nil)
+                        Button("다음 자막과 합치기") { model.mergeNextCaption() }.disabled(model.selected?.1.title == nil)
+                    }.font(JH.Font.caption).buttonStyle(.jhTool)
+                    HStack {
+                        TextField("이동 초 · ±", text: $offset).textFieldStyle(.roundedBorder)
+                        Button("전체 시간 이동") {
+                            if let seconds = Double(offset) { model.offsetCaptions(seconds) } else { model.error = "이동 시간을 숫자로 입력하세요." }
+                        }
+                    }.font(JH.Font.caption)
                     }
                 }.font(JH.Font.caption)
                 if !captionWarnings.isEmpty { Text(captionWarnings).font(JH.Font.micro).foregroundStyle(JH.Palette.warning) }
