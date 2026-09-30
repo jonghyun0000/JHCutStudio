@@ -8,6 +8,8 @@ struct RenderLayer {
     let trackID: CMPersistentTrackID?
     let image: CIImage?
     let orientation: CGAffineTransform
+    /// Per-frame camera-shake correction for this clip, built once when the plan is built.
+    var stabilization: StabilizationPlan? = nil
 }
 
 final class TimelineInstruction: NSObject, AVVideoCompositionInstructionProtocol, @unchecked Sendable {
@@ -57,7 +59,10 @@ public final class TimelineCompositor: NSObject, AVVideoCompositing {
                     let source: CIImage
                     if let fixed = layer.image { source = fixed }
                     else if let trackID = layer.trackID, let frame = request.sourceFrame(byTrackID: trackID) {
-                        let oriented = CIImage(cvPixelBuffer: frame).transformed(by: layer.orientation)
+                        var raw = CIImage(cvPixelBuffer: frame)
+                        // Before the track rotation: the analysed path is in decoded-frame axes.
+                        if let plan = layer.stabilization { raw = Self.stabilized(raw, plan: plan, clip: layer.clip, localSeconds: (request.compositionTime - layer.clip.start.cmTime).seconds) }
+                        let oriented = raw.transformed(by: layer.orientation)
                         source = oriented.transformed(by: CGAffineTransform(translationX: -oriented.extent.minX, y: -oriented.extent.minY))
                     } else {
                         request.finish(with: MediaEngineError.failed("타임라인 영상 프레임을 디코딩하지 못했습니다: \(layer.clip.name)")); return
@@ -126,6 +131,19 @@ public final class TimelineCompositor: NSObject, AVVideoCompositing {
                 request.finish(withComposedVideoFrame: buffer)
             }
         }
+    }
+    /// Removes the measured shake: translate/rotate by the correction and zoom by the plan's constant
+    /// factor so the frame edges never show. Coordinates are those of the decoded frame.
+    static func stabilized(_ image: CIImage, plan: StabilizationPlan, clip: Clip, localSeconds: Double) -> CIImage {
+        let rate = (clip.playbackRate ?? PlaybackRate()).multiplier
+        let c = plan.correction(atSource: clip.sourceStart.seconds + max(0, localSeconds) * rate)
+        let e = image.extent
+        return image.clampedToExtent()
+            .transformed(by: CGAffineTransform(translationX: -e.midX, y: -e.midY))
+            .transformed(by: CGAffineTransform(scaleX: plan.zoom, y: plan.zoom))
+            .transformed(by: CGAffineTransform(rotationAngle: c.angle))
+            .transformed(by: CGAffineTransform(translationX: e.midX + c.x * e.width, y: e.midY + c.y * e.height))
+            .cropped(to: e)
     }
     public func cancelAllPendingVideoCompositionRequests() {
         // Queue drain guarantees no previous request survives completion of this cancellation call.

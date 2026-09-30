@@ -5,7 +5,7 @@ set -uo pipefail
 cd "$(dirname "$0")/.."
 logs="${JHCUT_TEST_LOGS:-Artifacts/Upgrade-0.7/TestLogs}"
 mkdir -p "$logs"
-suites=(${JHCUT_SUITES:-domain compatibility connected productivity auto-captions multilingual checkpoint evaluation language speaker batch glossary vad quality distribution})
+suites=(${JHCUT_SUITES:-domain compatibility connected productivity auto-captions multilingual checkpoint evaluation language speaker batch glossary vad quality distribution stabilization stabilize-editor})
 failed=0
 for suite in "${suites[@]}"; do
   start=$(date +%s)

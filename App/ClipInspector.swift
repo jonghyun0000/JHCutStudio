@@ -53,6 +53,7 @@ struct ClipInspector: View {
                     fadeSlider("화면 페이드 인", \.fadeIn)
                     fadeSlider("화면 페이드 아웃", \.fadeOut)
                 }
+                if isVideoClip { DisclosureGroup("손떨림 보정") { stabilizationControls } }
                 if clip.title == nil && track.kind != .audio { DisclosureGroup("색 보정과 크롭") { colorControls } }
                 Button("입력한 숫자 적용") { apply() }.buttonStyle(.jhPrimary).frame(maxWidth: .infinity).disabled(track.isLocked)
                 DisclosureGroup("키프레임") { keyframeControls }
@@ -176,6 +177,30 @@ struct ClipInspector: View {
     }
     private func style<T>(_ path: WritableKeyPath<TextStyle, T>) -> Binding<T> {
         Binding(get: { (draft.title?.style ?? TextStyle())[keyPath: path] }, set: { value in var s = draft.title?.style ?? TextStyle(); s[keyPath: path] = value; draft.title?.style = s })
+    }
+    private var isVideoClip: Bool { clip.title == nil && clip.assetID.flatMap { id in model.project.assets.first { $0.id == id } }?.kind == .video }
+    @ViewBuilder private var stabilizationControls: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Text("영상 속 손떨림을 분석해 줄입니다. 분석 결과는 프로젝트에 저장되고, 원본 영상은 바뀌지 않습니다. 크게 움직이는 피사체가 있어도 배경 기준으로 잡습니다.").font(JH.Font.micro).foregroundStyle(.secondary)
+            if model.productivityBusy {
+                ProgressView(); Text(model.productivityStatus).font(JH.Font.micro)
+                Button("분석 취소") { model.cancelProductivity() }.buttonStyle(.jhTool)
+            } else {
+                Button(clip.stabilization == nil ? "손떨림 분석" : "다시 분석") { model.analyzeStabilization() }.buttonStyle(.jhTool)
+                    .disabled(track.isLocked || model.busyDocument || clip.sourceDuration.seconds > StabilizationAnalyzer.maximumSeconds)
+                if clip.sourceDuration.seconds > StabilizationAnalyzer.maximumSeconds { Text("이 클립은 \(Int(StabilizationAnalyzer.maximumSeconds / 60))분보다 길어 나눈 뒤 분석해야 합니다.").font(JH.Font.micro).foregroundStyle(JH.Palette.warning) }
+            }
+            if let data = clip.stabilization {
+                let covered = data.covers(clip.sourceStart, duration: clip.sourceDuration)
+                Toggle("보정 사용", isOn: Binding(get: { draft.stabilization?.enabled ?? data.enabled }, set: { value in draft.stabilization?.enabled = value; commitNow() })).disabled(track.isLocked || !covered)
+                slider("강도", Binding(get: { draft.stabilization?.strength ?? data.strength }, set: { draft.stabilization?.strength = $0 }), StabilizationData.strengthRange)
+                slider("부드러움", Binding(get: { draft.stabilization?.smoothing ?? data.smoothing }, set: { draft.stabilization?.smoothing = $0 }), StabilizationData.smoothingRange, suffix: "초")
+                if covered { Text(EditorModel.describeStabilization(data)).font(JH.Font.micro).foregroundStyle(.secondary) }
+                else { Text("클립을 늘려 분석한 범위를 벗어났습니다. 이 클립은 보정 없이 나옵니다. ‘다시 분석’을 누르세요.").font(JH.Font.micro).foregroundStyle(JH.Palette.warning) }
+                Text("강도를 낮추면 흔들림을 덜 없애고, 부드러움을 높이면 화면이 더 차분해지지만 천천히 움직이는 장면은 조금 늦게 따라갑니다. 흔들림을 없애느라 화면이 조금 확대됩니다.").font(JH.Font.micro).foregroundStyle(.secondary)
+                Button("보정 제거") { model.removeStabilization() }.buttonStyle(.jhTool).disabled(track.isLocked || model.busyDocument)
+            }
+        }
     }
     private func visual(_ path: WritableKeyPath<VisualAdjustments, Double>) -> Binding<Double> {
         Binding(get: { (draft.visual ?? VisualAdjustments())[keyPath: path] }, set: { value in var v = draft.visual ?? VisualAdjustments(); v[keyPath: path] = value; draft.visual = v })

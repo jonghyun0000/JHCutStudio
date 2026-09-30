@@ -52,6 +52,10 @@ public enum ProjectValidator {
                     let crops = [visual.cropLeft, visual.cropRight, visual.cropTop, visual.cropBottom]
                     guard [visual.exposure, visual.contrast, visual.saturation].allSatisfy(\.isFinite), (-4...4).contains(visual.exposure), (0...4).contains(visual.contrast), (0...4).contains(visual.saturation), crops.allSatisfy({ $0.isFinite && (0..<1).contains($0) }), visual.cropLeft + visual.cropRight < 1, visual.cropTop + visual.cropBottom < 1 else { throw ProjectError("노출은 -4~4, 대비·채도는 0~4, 크롭은 각 축의 합이 1 미만이어야 합니다.") }
                 }
+                if let stabilization = clip.stabilization {
+                    if let problem = stabilization.validationProblem { throw ProjectError(problem) }
+                    guard clip.title == nil, clip.assetID != nil else { throw ProjectError("손떨림 보정은 영상 클립에만 저장할 수 있습니다.") }
+                }
                 var previousTime: MediaTime?
                 for frame in clip.keyframes ?? [] {
                     let t = frame.transform

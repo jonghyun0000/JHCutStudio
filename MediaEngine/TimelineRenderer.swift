@@ -161,7 +161,11 @@ public enum TimelineRenderer {
                             .concatenating(preferred)
                             .concatenating(CGAffineTransform(translationX: -display.minX, y: -display.minY))
                             .concatenating(CGAffineTransform(a: 1, b: 0, c: 0, d: -1, tx: 0, ty: display.height))
-                        layers.append(RenderLayer(clip: clip, trackID: target.trackID, image: nil, orientation: orientation))
+                        var layer = RenderLayer(clip: clip, trackID: target.trackID, image: nil, orientation: orientation)
+                        // Only where the stored path covers the clip's source range; otherwise the
+                        // clip renders unstabilised rather than with a partly held correction.
+                        if let data = clip.stabilization, data.covers(clip.sourceStart, duration: clip.sourceDuration) { layer.stabilization = StabilizationPlan(data) }
+                        layers.append(layer)
                     }
                     if !track.isMuted, let source = try await asset.loadTracks(withMediaType: .audio).first {
                         let available = try await source.load(.timeRange)

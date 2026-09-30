@@ -84,6 +84,8 @@ public struct Clip: Codable, Identifiable, Equatable, Sendable {
     public var lineageID: UUID?
     public var ducking: [GainPoint]?
     public var captionMetadata: CaptionMetadata?
+    /// Measured camera path and how much of its shake to remove (video clips only).
+    public var stabilization: StabilizationData?
     public var end: MediaTime { start + duration }
     public init(id: UUID = UUID(), name: String = "클립", assetID: UUID? = nil, start: MediaTime = .zero, sourceStart: MediaTime = .zero, duration: MediaTime = MediaTime(seconds: 3), volume: Double = 1, transform: ClipTransform = ClipTransform(), title: Title? = nil, playbackRate: PlaybackRate? = nil, visual: VisualAdjustments? = nil, fadeIn: MediaTime? = nil, fadeOut: MediaTime? = nil, audioFadeIn: MediaTime? = nil, audioFadeOut: MediaTime? = nil, keyframes: [TransformKeyframe]? = nil) {
         self.id = id; self.name = name; self.assetID = assetID; self.start = start; self.sourceStart = sourceStart; self.duration = duration; self.volume = volume; self.transform = transform; self.title = title
