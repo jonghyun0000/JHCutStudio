@@ -56,6 +56,13 @@ public enum ProjectValidator {
                     if let problem = stabilization.validationProblem { throw ProjectError(problem) }
                     guard clip.title == nil, clip.assetID != nil else { throw ProjectError("손떨림 보정은 영상 클립에만 저장할 수 있습니다.") }
                 }
+                if let transition = clip.transition {
+                    guard clip.title == nil, transition.duration > .zero, transition.duration < clip.duration else { throw ProjectError("전환 길이는 클립보다 짧아야 하며 제목에는 쓸 수 없습니다.") }
+                }
+                if let animation = clip.titleAnimation {
+                    guard clip.title != nil else { throw ProjectError("글자 애니메이션은 자막·제목 클립에만 쓸 수 있습니다.") }
+                    if let problem = animation.validationProblem(clipDuration: clip.duration) { throw ProjectError(problem) }
+                }
                 var previousTime: MediaTime?
                 for frame in clip.keyframes ?? [] {
                     let t = frame.transform
@@ -123,6 +130,8 @@ public indirect enum EditCommand {
     case addClip(trackID: UUID, clip: Clip)
     case updateClip(trackID: UUID, clip: Clip)
     case crossDissolve(trackID: UUID, clipID: UUID, duration: MediaTime)
+    /// Same overlap as `crossDissolve`, with a chosen kind (and side, for wipe/slide/push).
+    case addTransition(trackID: UUID, clipID: UUID, kind: TransitionKind, direction: TransitionDirection, duration: MediaTime)
     case separateAudio(trackID: UUID, clipID: UUID, destinationTrackID: UUID? = nil)
     case insertClip(trackID: UUID, clip: Clip, at: MediaTime)
     case overwriteClip(trackID: UUID, clip: Clip, at: MediaTime)
@@ -188,6 +197,38 @@ public struct EditorHistory {
         guard let index = track.clips.firstIndex(where: { $0.id == id }) else { throw ProjectError("클립을 찾을 수 없습니다.") }
         return index
     }
+    /// The incoming clip moves `duration` earlier onto its own overlay track (so it overlaps the
+    /// outgoing clip), everything after it moves up, and audio cross-fades over the same time.
+    private static func addTransition(in project: inout Project, trackID: UUID, clipID: UUID, kind: TransitionKind, direction: TransitionDirection, duration: MediaTime) throws {
+        let ti = try trackIndex(trackID, in: project)
+        guard project.sequence.tracks[ti].kind == .video, duration > .zero else { throw ProjectError("메인 영상에서 전환 길이를 지정하세요.") }
+        let sorted = project.sequence.tracks[ti].clips.sorted { $0.start < $1.start }
+        let index = try clipIndex(clipID, in: Track(name: "", kind: .video, clips: sorted))
+        guard sorted.indices.contains(index + 1) else { throw ProjectError("다음 영상 클립이 있어야 합니다.") }
+        let left = sorted[index]; var right = sorted[index + 1]
+        guard left.end == right.start, duration < min(left.duration, right.duration) else { throw ProjectError("서로 붙어 있는 두 클립보다 짧은 전환을 선택하세요.") }
+        right.start = try right.start.subtracting(duration); right.audioFadeIn = duration
+        right.transition = ClipTransition(kind: kind, direction: direction, duration: duration)
+        // Dissolve is the fade-in itself; the other kinds draw their own motion and must not also fade.
+        right.fadeIn = kind == .dissolve ? duration : nil
+        project.sequence.tracks[ti].clips.removeAll { $0.id == right.id }
+        let leftIndex = try clipIndex(left.id, in: project.sequence.tracks[ti])
+        project.sequence.tracks[ti].clips[leftIndex].audioFadeOut = duration
+        try shiftFollowing(in: &project.sequence.tracks[ti], startingAt: sorted[index + 1].end, by: .zero.subtracting(duration), excluding: left.id)
+        for t in project.sequence.tracks.indices {
+            for c in project.sequence.tracks[t].clips.indices {
+                let child = project.sequence.tracks[t].clips[c]
+                if child.title == nil, let parent = child.connection?.parentID, parent == left.id || parent == right.id {
+                    guard !project.sequence.tracks[t].isLocked else { throw ProjectError("전환에 연결된 오디오 트랙을 잠금 해제하세요.") }
+                    if parent == left.id { project.sequence.tracks[t].clips[c].audioFadeOut = min(duration, child.duration) }
+                    else { project.sequence.tracks[t].clips[c].audioFadeIn = min(duration, child.duration) }
+                }
+            }
+        }
+        let transition = Track(name: kind.label + " · " + right.name, kind: .overlay, clips: [right])
+        project.sequence.tracks.insert(transition, at: ti + 1)
+    }
+
     private static func execute(_ command: EditCommand, in project: inout Project) throws {
         switch command {
         case .batch(let commands):
@@ -294,30 +335,9 @@ public struct EditorHistory {
             let temporal = original.assetID.flatMap { id in project.assets.first { $0.id == id } }?.kind != .image && original.title == nil
             project.sequence.tracks[ti].clips[ci] = try ClipTemporalEditor.trimmed(original, newStart: newStart, newSourceStart: newSourceStart, newDuration: newDuration, frameRate: project.sequence.frameRate, temporalSource: temporal)
         case .crossDissolve(let trackID, let clipID, let duration):
-            let ti = try trackIndex(trackID, in: project)
-            guard project.sequence.tracks[ti].kind == .video, duration > .zero else { throw ProjectError("메인 영상에서 전환 길이를 지정하세요.") }
-            let sorted = project.sequence.tracks[ti].clips.sorted { $0.start < $1.start }
-            let index = try clipIndex(clipID, in: Track(name: "", kind: .video, clips: sorted))
-            guard sorted.indices.contains(index + 1) else { throw ProjectError("다음 영상 클립이 있어야 합니다.") }
-            let left = sorted[index]; var right = sorted[index + 1]
-            guard left.end == right.start, duration < min(left.duration, right.duration) else { throw ProjectError("서로 붙어 있는 두 클립보다 짧은 전환을 선택하세요.") }
-            right.start = try right.start.subtracting(duration); right.fadeIn = duration; right.audioFadeIn = duration
-            project.sequence.tracks[ti].clips.removeAll { $0.id == right.id }
-            let leftIndex = try clipIndex(left.id, in: project.sequence.tracks[ti])
-            project.sequence.tracks[ti].clips[leftIndex].audioFadeOut = duration
-            try shiftFollowing(in: &project.sequence.tracks[ti], startingAt: sorted[index + 1].end, by: .zero.subtracting(duration), excluding: left.id)
-            for t in project.sequence.tracks.indices {
-                for c in project.sequence.tracks[t].clips.indices {
-                    let child = project.sequence.tracks[t].clips[c]
-                    if child.title == nil, let parent = child.connection?.parentID, parent == left.id || parent == right.id {
-                        guard !project.sequence.tracks[t].isLocked else { throw ProjectError("전환에 연결된 오디오 트랙을 잠금 해제하세요.") }
-                        if parent == left.id { project.sequence.tracks[t].clips[c].audioFadeOut = min(duration, child.duration) }
-                        else { project.sequence.tracks[t].clips[c].audioFadeIn = min(duration, child.duration) }
-                    }
-                }
-            }
-            let transition = Track(name: "디졸브 · " + right.name, kind: .overlay, clips: [right])
-            project.sequence.tracks.insert(transition, at: ti + 1)
+            try addTransition(in: &project, trackID: trackID, clipID: clipID, kind: .dissolve, direction: .fromRight, duration: duration)
+        case .addTransition(let trackID, let clipID, let kind, let direction, let duration):
+            try addTransition(in: &project, trackID: trackID, clipID: clipID, kind: kind, direction: direction, duration: duration)
         case .separateAudio(let trackID, let clipID, let destinationTrackID):
             let ti = try trackIndex(trackID, in: project)
             let ci = try clipIndex(clipID, in: project.sequence.tracks[ti])

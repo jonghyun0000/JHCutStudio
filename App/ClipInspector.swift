@@ -21,6 +21,9 @@ struct ClipInspector: View {
     @State private var selectedKeyTime: MediaTime?
     @State private var keySelectionPlayhead: Double?
     @State private var interpolation = KeyframeInterpolation.linear
+    @State private var newTransitionKind = TransitionKind.dissolve
+    @State private var newTransitionDirection = TransitionDirection.fromRight
+    @State private var newTransitionSeconds = 0.5
     @State private var fonts = NSFontManager.shared.availableFonts.sorted()
     private var hasSound: Bool { clip.assetID.flatMap { id in model.project.assets.first { $0.id == id } }.map { $0.kind == .audio || $0.hasAudio } ?? false }
     /// Snapping grid comes from the sequence, so a 24 or 60fps project trims on its own frames.
@@ -39,6 +42,8 @@ struct ClipInspector: View {
                 Button("선택 구간 반복 듣기") { model.loopSelection() }.buttonStyle(.jhTool)
                 DisclosureGroup("시간과 길이") { timing }
                 if draft.title != nil { DisclosureGroup("자막 모양", isExpanded: $titleExpanded) { titleControls } }
+                if draft.title != nil { DisclosureGroup("글자 애니메이션") { titleAnimationControls } }
+                if let transition = model.transitionOf(clip, on: track) { DisclosureGroup("전환 효과") { transitionChangeControls(transition) } }
                 if track.kind != .audio { DisclosureGroup("화면 배치") { transformControls } }
                 if temporal { DisclosureGroup("재생 속도") { speedControls } }
                 if hasSound {
@@ -62,7 +67,7 @@ struct ClipInspector: View {
                         Button(destination.name) { model.moveSelectedClip(to: destination) }.disabled(destination.isLocked)
                     }
                 }
-                if track.kind == .video { Button("다음 장면과 0.5초 디졸브") { model.perform(.crossDissolve(trackID: track.id, clipID: clip.id, duration: MediaTime(1, 2))) }.buttonStyle(.jhTool) }
+                if track.kind == .video { DisclosureGroup("다음 장면과 전환") { transitionAddControls } }
                 Button("이 클립으로 이동") { model.seek(clip.start.seconds) }.buttonStyle(.jhTool)
                 Divider()
                 Button("일반 삭제 · 빈 공간 유지", role: .destructive) { model.remove() }.buttonStyle(.borderless)
@@ -177,6 +182,55 @@ struct ClipInspector: View {
     }
     private func style<T>(_ path: WritableKeyPath<TextStyle, T>) -> Binding<T> {
         Binding(get: { (draft.title?.style ?? TextStyle())[keyPath: path] }, set: { value in var s = draft.title?.style ?? TextStyle(); s[keyPath: path] = value; draft.title?.style = s })
+    }
+    // MARK: Transitions and title animation
+    @ViewBuilder private var transitionAddControls: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Text("이 클립과 다음 클립을 겹쳐 전환합니다. 다음 장면이 길이만큼 앞당겨져 전체 길이가 그만큼 짧아지고, 소리는 함께 이어집니다. 서로 붙어 있는 두 클립만 가능합니다.").font(JH.Font.micro).foregroundStyle(.secondary)
+            Picker("효과", selection: $newTransitionKind) { ForEach(TransitionKind.allCases, id: \.self) { Text($0.label).tag($0) } }
+            if newTransitionKind.usesDirection {
+                Picker("방향", selection: $newTransitionDirection) { ForEach(TransitionDirection.allCases, id: \.self) { Text($0.label).tag($0) } }
+            }
+            HStack { Text("길이"); Spacer(); Text(String(format: "%.1f초", newTransitionSeconds)).monospacedDigit() }.font(JH.Font.caption)
+            Slider(value: $newTransitionSeconds, in: 0.2...2.0, step: 0.1).controlSize(.small)
+            Button("전환 추가") { model.addTransition(kind: newTransitionKind, direction: newTransitionDirection, seconds: newTransitionSeconds) }
+                .buttonStyle(.jhTool).disabled(track.isLocked || model.busyDocument)
+        }
+    }
+    @ViewBuilder private func transitionChangeControls(_ transition: ClipTransition) -> some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Text("이 클립이 앞 클립 위로 들어오는 방식입니다. 길이(\(String(format: "%.1f", transition.duration.seconds))초)는 그대로 두고 효과만 바꿉니다.").font(JH.Font.micro).foregroundStyle(.secondary)
+            Picker("효과", selection: Binding(get: { transition.kind }, set: { model.changeTransition(kind: $0, direction: transition.direction) })) {
+                ForEach(TransitionKind.allCases, id: \.self) { Text($0.label).tag($0) }
+            }.disabled(track.isLocked)
+            if transition.kind.usesDirection {
+                Picker("방향", selection: Binding(get: { transition.direction }, set: { model.changeTransition(kind: transition.kind, direction: $0) })) {
+                    ForEach(TransitionDirection.allCases, id: \.self) { Text($0.label).tag($0) }
+                }.disabled(track.isLocked)
+            }
+        }
+    }
+    @ViewBuilder private var titleAnimationControls: some View {
+        let current = clip.titleAnimation ?? TitleAnimation()
+        VStack(alignment: .leading, spacing: 8) {
+            Text("자막이 나타나고 사라질 때의 움직임입니다. 원본 영상과 자막 문구는 바뀌지 않습니다.").font(JH.Font.micro).foregroundStyle(.secondary)
+            Picker("등장", selection: Binding(get: { current.inKind }, set: { var value = current; value.inKind = $0; model.setTitleAnimation(value) })) {
+                Text("없음").tag(TitleAnimationKind?.none); ForEach(TitleAnimationKind.allCases, id: \.self) { Text($0.label).tag(TitleAnimationKind?.some($0)) }
+            }.disabled(track.isLocked)
+            Picker("퇴장", selection: Binding(get: { current.outKind }, set: { var value = current; value.outKind = $0; model.setTitleAnimation(value) })) {
+                Text("없음").tag(TitleAnimationKind?.none); ForEach(TitleAnimationKind.allCases, id: \.self) { Text($0.label).tag(TitleAnimationKind?.some($0)) }
+            }.disabled(track.isLocked)
+            if current.inKind != nil {
+                slider("등장 길이", Binding(get: { draft.titleAnimation?.inSeconds ?? current.inSeconds }, set: { draft.titleAnimation?.inSeconds = $0 }), 0.1...min(3, max(0.2, clip.duration.seconds)), suffix: "초")
+            }
+            if current.outKind != nil {
+                slider("퇴장 길이", Binding(get: { draft.titleAnimation?.outSeconds ?? current.outSeconds }, set: { draft.titleAnimation?.outSeconds = $0 }), 0.1...min(3, max(0.2, clip.duration.seconds)), suffix: "초")
+            }
+            if !current.isEmpty {
+                Button("같은 효과를 모든 자막에 적용") { model.applyTitleAnimationToAllCaptions(current) }.buttonStyle(.jhTool).disabled(model.busyDocument)
+                Button("애니메이션 제거") { model.setTitleAnimation(nil) }.buttonStyle(.jhTool).disabled(track.isLocked)
+            }
+        }
     }
     private var isVideoClip: Bool { clip.title == nil && clip.assetID.flatMap { id in model.project.assets.first { $0.id == id } }?.kind == .video }
     @ViewBuilder private var stabilizationControls: some View {

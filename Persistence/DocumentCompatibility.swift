@@ -24,13 +24,15 @@ enum DocumentCompatibility {
         case "Sequence": allowed = "id name width height frameRate colorSpace tracks markers speakers"
         case "MediaAsset": allowed = "id name path relativePath bookmark kind duration width height hasAudio codec colorInfo supported issue provenance contentHash"
         case "Track": allowed = "id name kind clips isMuted isHidden isLocked syncLocked"
-        case "Clip": allowed = "id name assetID start sourceStart duration volume transform title playbackRate visual fadeIn fadeOut audioFadeIn audioFadeOut keyframes connection lineageID ducking captionMetadata stabilization"
+        case "Clip": allowed = "id name assetID start sourceStart duration volume transform title playbackRate visual fadeIn fadeOut audioFadeIn audioFadeOut keyframes connection lineageID ducking captionMetadata stabilization transition titleAnimation"
         case "CaptionMetadata": allowed = "language originalLanguage originalText translatedFrom generatedText clipLanguage languageConfidence languageManual languageNeedsReview speaker speakerStatus translationStyle styleApplied glossaryApplied glossaryFailed"
         case "CubeLUT": allowed = "name size values"
         case "ClipConnection": allowed = "parentID sourceStart sourceDuration generatedText"
         case "GainPoint": allowed = "time gain"
         case "TimelineMarker": allowed = "id time name"
         case "SpeakerProfile": allowed = "id name colorHex"
+        case "ClipTransition": allowed = "kind direction duration"
+        case "TitleAnimation": allowed = "inKind outKind inSeconds outSeconds"
         case "StabilizationData": allowed = "enabled strength smoothing step analyzedStart frameWidth frameHeight x y angle rejectedSteps"
         case "GlossaryEntry": allowed = "id source target sourceLanguage targetLanguage caseSensitive protected"
         case "Title": allowed = "text fontName fontSize colorHex x y style"
@@ -44,7 +46,7 @@ enum DocumentCompatibility {
         default: return
         }
         try keys(object, allowed: allowed, path: path)
-        let childTypes: [String: String] = ["captionMetadata":"CaptionMetadata", "lut":"CubeLUT", "connection":"ClipConnection", "ducking":"GainPoint", "markers":"TimelineMarker", "speakers":"SpeakerProfile", "glossary":"GlossaryEntry", "stabilization":"StabilizationData", "analyzedStart":"MediaTime", "sourceDuration":"MediaTime", "sequence":"Sequence", "derivedSequences":"Sequence", "assets":"MediaAsset", "tracks":"Track", "clips":"Clip", "title":"Title", "style":"TextStyle", "transform":"ClipTransform", "visual":"VisualAdjustments", "keyframes":"TransformKeyframe", "frameRate":"FrameRate", "playbackRate":"PlaybackRate", "provenance":"AssetProvenance", "start":"MediaTime", "sourceStart":"MediaTime", "duration":"MediaTime", "fadeIn":"MediaTime", "fadeOut":"MediaTime", "audioFadeIn":"MediaTime", "audioFadeOut":"MediaTime", "time":"MediaTime"]
+        let childTypes: [String: String] = ["captionMetadata":"CaptionMetadata", "lut":"CubeLUT", "connection":"ClipConnection", "ducking":"GainPoint", "markers":"TimelineMarker", "speakers":"SpeakerProfile", "glossary":"GlossaryEntry", "stabilization":"StabilizationData", "transition":"ClipTransition", "titleAnimation":"TitleAnimation", "analyzedStart":"MediaTime", "sourceDuration":"MediaTime", "sequence":"Sequence", "derivedSequences":"Sequence", "assets":"MediaAsset", "tracks":"Track", "clips":"Clip", "title":"Title", "style":"TextStyle", "transform":"ClipTransform", "visual":"VisualAdjustments", "keyframes":"TransformKeyframe", "frameRate":"FrameRate", "playbackRate":"PlaybackRate", "provenance":"AssetProvenance", "start":"MediaTime", "sourceStart":"MediaTime", "duration":"MediaTime", "fadeIn":"MediaTime", "fadeOut":"MediaTime", "audioFadeIn":"MediaTime", "audioFadeOut":"MediaTime", "time":"MediaTime"]
         for (key, type) in childTypes {
             if let child = object[key] as? [String: Any] { try inspect(child, kind: type, path: path + "." + key) }
             if let children = object[key] as? [[String: Any]] {
@@ -57,7 +59,7 @@ enum DocumentCompatibility {
 extension DocumentCompatibility {
     /// Keys first written by 0.7. A 0.6 app rejects documents that contain them (strict allowlist),
     /// so the first save that adds one keeps a copy of the older file (see ProjectStore.save).
-    public static let keysIntroducedIn07: Set<String> = ["glossary", "speakers", "stabilization", "clipLanguage", "languageConfidence", "languageManual", "languageNeedsReview",
+    public static let keysIntroducedIn07: Set<String> = ["glossary", "speakers", "stabilization", "transition", "titleAnimation", "clipLanguage", "languageConfidence", "languageManual", "languageNeedsReview",
                                                          "speaker", "speakerStatus", "translationStyle", "styleApplied", "glossaryApplied", "glossaryFailed"]
     public static func usesKeysIntroducedIn07(_ data: Data) -> Bool {
         guard let object = try? JSONSerialization.jsonObject(with: data) else { return false }

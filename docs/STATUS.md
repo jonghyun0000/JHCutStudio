@@ -2,7 +2,7 @@
 
 0.7은 기능 수보다 **긴 영상을 안정적으로 처리하고, 자막·번역·출력 결과를 검증할 수 있게** 하는 데 집중했다. 단계별 분석·실패 사례·해결·측정은 [0.7 작업 기록](UPGRADE-0.7-WORKLOG.md), 설치·문제 해결은 [INSTALL-0.7](INSTALL-0.7.md), 이전 상태는 [0.6](STATUS-0.6.md)·[0.5](STATUS-0.5.md)에 보존했다.
 
-## 자동 검사 — 15개 묶음 495개 전부 통과
+## 자동 검사 — 19개 묶음 644개 전부 통과 (0.7 본 작업 495 + 후속 1·2순위 149)
 
 `bash Scripts/build.sh` 후 `bash Scripts/test-upgrade07.sh` (로그: `Artifacts/Upgrade-0.7/TestLogs/`)
 
@@ -23,6 +23,10 @@
 | vad | 49 | 7. 음성 구간·반복 루프·인식기 출력 견고성 |
 | quality | 17 | 9. 출력 품질 검사 |
 | distribution | 27 | 10. 설치 점검·마이그레이션·백업 |
+| stabilization | 35 | 후속 1. 손떨림 보정 |
+| stabilize-editor | 17 | 후속 1. 편집기 흐름 |
+| transitions | 75 | 후속 2. 전환 6종·글자 애니메이션(합성+실사) |
+| transition-editor | 22 | 후속 2. 편집기 흐름 |
 
 추가 실행: `Scripts/test-longform.sh` 5회(각 10개, 8단계), `Scripts/test-real-iphone07.sh`(실사 3개), `Scripts/release-preflight.sh` **22/22**. 앱 전체 빌드 성공(약 95초, Swift 5 모드). 기존 Swift 6 모드 경고 2개(FolderRelinking, MediaPreparation)는 남아 있다.
 

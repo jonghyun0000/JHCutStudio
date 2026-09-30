@@ -118,7 +118,11 @@ public enum TimelineRenderer {
                     let end = (clip.start + clip.duration).cmTime
                     boundaries.append(start); boundaries.append(end)
                     if let title = clip.title {
-                        layers.append(RenderLayer(clip: clip, trackID: nil, image: try TitleRasterizer.image(title: title, size: canvas), orientation: .identity))
+                        var titleLayer = RenderLayer(clip: clip, trackID: nil, image: try TitleRasterizer.image(title: title, size: canvas), orientation: .identity)
+                        if let animation = clip.titleAnimation, animation.inKind == .typewriter || animation.outKind == .typewriter {
+                            titleLayer.titleBounds = try CaptionLayout.bounds(of: title, width: Int(canvas.width), height: Int(canvas.height))
+                        }
+                        layers.append(titleLayer)
                         continue
                     }
                     guard let assetID = clip.assetID, let info = inspected[assetID] else { throw MediaEngineError.invalid("클립의 원본 연결이 없습니다: \(clip.name)") }

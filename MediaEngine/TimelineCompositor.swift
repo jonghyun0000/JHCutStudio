@@ -10,6 +10,8 @@ struct RenderLayer {
     let orientation: CGAffineTransform
     /// Per-frame camera-shake correction for this clip, built once when the plan is built.
     var stabilization: StabilizationPlan? = nil
+    /// Drawn extent of the text, computed only for titles that use the typewriter reveal.
+    var titleBounds: CGRect? = nil
 }
 
 final class TimelineInstruction: NSObject, AVVideoCompositionInstructionProtocol, @unchecked Sendable {
@@ -113,6 +115,11 @@ public final class TimelineCompositor: NSObject, AVVideoCompositing {
                             .transformed(by: CGAffineTransform(translationX: bounds.midX + transform.x, y: bounds.midY + transform.y))
                     } else {
                         // Title raster already uses normalized title coordinates on a full-size canvas.
+                        if let animation = layer.clip.titleAnimation, !animation.isEmpty, let title = layer.clip.title {
+                            let state = animation.state(at: localTime.seconds, clipDuration: layer.clip.duration.seconds)
+                            // Scaling is about the title's own anchor (Title.x/y are fractions of the canvas, y up).
+                            image = TransitionRenderer.animate(image, state: state, anchor: CGPoint(x: title.x * bounds.width, y: title.y * bounds.height), canvas: bounds, textBounds: layer.titleBounds)
+                        }
                         image = image.transformed(by: CGAffineTransform(translationX: -bounds.midX, y: -bounds.midY))
                             .transformed(by: CGAffineTransform(scaleX: transform.scale, y: transform.scale))
                             .transformed(by: CGAffineTransform(rotationAngle: transform.rotation * .pi / 180))
@@ -121,6 +128,12 @@ public final class TimelineCompositor: NSObject, AVVideoCompositing {
                     let opacity = transform.opacity * ClipEnvelopes.fade(at: localTime.cmTime, duration: layer.clip.duration.cmTime, fadeIn: layer.clip.fadeIn?.cmTime, fadeOut: layer.clip.fadeOut?.cmTime)
                     if opacity < 1 {
                         image = image.applyingFilter("CIColorMatrix", parameters: ["inputAVector": CIVector(x: 0, y: 0, z: 0, w: opacity)])
+                    }
+                    // Dissolve is the clip's fade-in (as in 0.6); every other kind draws its own motion during the overlap.
+                    if let transition = layer.clip.transition, layer.clip.title == nil, localTime < transition.duration, transition.kind != .dissolve || layer.clip.fadeIn == nil {
+                        let p = localTime.seconds / transition.duration.seconds
+                        result = TransitionRenderer.compose(transition, progress: p, incoming: image, below: result, bounds: bounds)
+                        continue
                     }
                     result = image.composited(over: result).cropped(to: bounds)
                 }
