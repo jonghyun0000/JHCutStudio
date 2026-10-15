@@ -37,8 +37,42 @@ public struct ClipTransition: Codable, Equatable, Sendable {
     public var kind: TransitionKind
     public var direction: TransitionDirection
     public var duration: MediaTime
+    /// Original effect-clock time at this fragment's local zero. Nil in untrimmed/old files.
+    public var offset: MediaTime?
+    /// New transitions use their own effect gain; old files may use the clip's native fade-in.
+    public var independentFade: Bool?
     public init(kind: TransitionKind, direction: TransitionDirection = .fromRight, duration: MediaTime) {
-        self.kind = kind; self.direction = direction; self.duration = duration
+        self.kind = kind; self.direction = direction; self.duration = duration; self.independentFade = true
+    }
+    public func progress(at local: MediaTime) -> Double { min(1, max(0, (local + (offset ?? .zero)).seconds / duration.seconds)) }
+    public func isActive(at local: MediaTime) -> Bool { local + (offset ?? .zero) < duration }
+}
+
+/// A dedicated transition track belongs to a main storyline. Fragments retain the outgoing
+/// scene and the destination used when removing the transition.
+public struct TransitionContext: Codable, Equatable, Sendable {
+    public var originTrackID: UUID
+    public var outgoingFamilyID: UUID
+    public var effect: ClipTransition
+    public init(originTrackID: UUID, outgoingFamilyID: UUID, effect: ClipTransition) {
+        self.originTrackID = originTrackID; self.outgoingFamilyID = outgoingFamilyID; self.effect = effect
+    }
+}
+
+/// An independently removable crossfade. Native fades, ducking and volume keys stay intact.
+public struct TransitionAudioFade: Codable, Equatable, Sendable {
+    public var ownerID: UUID
+    public var start: MediaTime
+    public var duration: MediaTime
+    public var incoming: Bool
+    public var points: [GainPoint]?
+    public init(ownerID: UUID, start: MediaTime, duration: MediaTime, incoming: Bool) {
+        self.ownerID = ownerID; self.start = start; self.duration = duration; self.incoming = incoming
+    }
+    public func gain(at local: MediaTime) -> Double {
+        if let points { return AudioAutomation.gain(points, at: local) }
+        let p = min(1, max(0, (local - start).seconds / duration.seconds))
+        return incoming ? p : 1 - p
     }
 }
 
@@ -73,14 +107,20 @@ public struct TitleAnimation: Codable, Equatable, Sendable {
     public var outKind: TitleAnimationKind?
     public var inSeconds: Double
     public var outSeconds: Double
+    /// Preserved effect clock for range edits; durations remain in that clock.
+    public var referenceDuration: Double?
+    public var timeOffset: Double?
+    public var timeScale: Double?
     public init(inKind: TitleAnimationKind? = nil, outKind: TitleAnimationKind? = nil, inSeconds: Double = 0.3, outSeconds: Double = 0.3) {
         self.inKind = inKind; self.outKind = outKind; self.inSeconds = inSeconds; self.outSeconds = outSeconds
     }
     public var isEmpty: Bool { inKind == nil && outKind == nil }
     public func validationProblem(clipDuration: MediaTime) -> String? {
-        guard inSeconds.isFinite, outSeconds.isFinite, Self.secondsRange.contains(inSeconds), Self.secondsRange.contains(outSeconds) else { return "글자 애니메이션 길이는 0.05~3초여야 합니다." }
+        guard inSeconds.isFinite, outSeconds.isFinite, inSeconds > 0, outSeconds > 0, inSeconds <= 3, outSeconds <= 3 else { return "글자 애니메이션 길이는 0보다 크고 3초 이하여야 합니다." }
+        let reference = referenceDuration ?? clipDuration.seconds
+        guard reference.isFinite, reference > 0, (timeOffset ?? 0).isFinite, (timeScale ?? 1).isFinite, (timeScale ?? 1) > 0 else { return "글자 애니메이션의 시간 매핑이 올바르지 않습니다." }
         let total = (inKind == nil ? 0 : inSeconds) + (outKind == nil ? 0 : outSeconds)
-        guard total <= clipDuration.seconds + 1e-6 else { return "글자 애니메이션(등장+퇴장)이 자막 길이보다 깁니다." }
+        guard total <= reference + 1e-6 else { return "글자 애니메이션(등장+퇴장)이 자막 길이보다 깁니다." }
         return nil
     }
 
@@ -96,6 +136,8 @@ public struct TitleAnimation: Codable, Equatable, Sendable {
         public static let rest = State()
     }
     public func state(at time: Double, clipDuration: Double) -> State {
+        let clipDuration = referenceDuration ?? clipDuration
+        let time = min(clipDuration, max(0, (timeOffset ?? 0) + time * (timeScale ?? 1)))
         var state = State.rest
         if let kind = inKind, time < inSeconds { state = Self.apply(kind, progress: max(0, time) / inSeconds, to: state) }
         if let kind = outKind {

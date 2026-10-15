@@ -1,0 +1,32 @@
+<!doctype html><html lang="ko"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>아이폰 대본 검수</title>
+<style>
+:root{color-scheme:dark;font:16px system-ui;background:#12151c;color:#e6e9f0}body{max-width:1080px;margin:40px auto;padding:0 24px;line-height:1.65}h1{font-size:28px;margin-bottom:4px}h2{font-size:20px;margin-top:32px}
+.card{padding:20px;background:#1c2230;border:1px solid #354158;border-radius:12px;margin:18px 0}.note{color:#b9c7da}.warning{color:#f6c076}audio{width:100%}button,input,select,textarea{font:inherit;color:inherit;background:#252e40;border:1px solid #53617a;border-radius:6px;padding:8px;margin:4px}button{cursor:pointer}button.primary{background:#285cbb}input[type=number]{width:110px}textarea{box-sizing:border-box;width:100%;min-height:80px}table{width:100%;border-collapse:collapse}th,td{text-align:left;padding:10px;border-bottom:1px solid #39445b}td{vertical-align:top}.inline{display:flex;flex-wrap:wrap;align-items:center;gap:8px}#error{color:#ffb0a8;white-space:pre-wrap}a{color:#a2c4ff}.small{font-size:14px}
+</style>
+<h1>아이폰 영상 대본 검수</h1><p id="scope" class="note"></p>
+<p class="warning">자동 인식 결과는 정답이 아닙니다. 실제 음성을 직접 듣고 대사·비발화·제외 구간을 기록하세요.</p>
+<div class="card"><h2 style="margin-top:0">1. 듣기</h2><p id="rationale" class="small"></p>
+<div class="inline"><label>들을 채널 <select id="channel"></select></label><label>속도 <select id="speed"><option value="0.75">0.75배</option><option value="1" selected>1배</option><option value="1.25">1.25배</option></select></label><strong id="clock"></strong></div>
+<audio id="audio" src="listen.wav" controls preload="metadata"></audio><p class="note small">혼합 음성과 각 원본 채널을 확인하세요. 아래 시각은 잘라낸 파일의 0초가 아닌 원본 영상 시각입니다.</p></div>
+<h2>2. 구간 기록</h2><p class="note">알아듣기 어려운 말·겹친 발화는 추측하지 말고 사유와 함께 제외합니다. 노래·음악·효과음만 있는 곳은 비발화입니다.</p>
+<div class="card"><div class="inline"><label>시작 <input id="start" type="number" step="0.001"></label><button id="captureStart">현재 시각 넣기</button><label>끝 <input id="end" type="number" step="0.001"></label><button id="captureEnd">현재 시각 넣기</button><label>종류 <select id="kind"><option value="speech">대사</option><option value="nonspeech">비발화</option><option value="excluded">평가 제외</option></select></label></div>
+<label>들리는 그대로 대사<textarea id="text" placeholder="자동 초안을 복사하지 말고, 실제로 들은 말을 적으세요."></textarea></label><label>제외 사유 <input id="reason" placeholder="예: 말이 겹쳐 분리 불가"></label>
+<label>조건 (여러 항목 선택 가능) <select id="condition" multiple size="3"><option value="unknown" selected>조건 미분류</option><option value="quiet">조용한 말</option><option value="backgroundMusic">배경 음악</option><option value="noise">소음</option><option value="shortResponse">짧은 응답</option><option value="overlap">겹친 발화</option></select></label><button id="add">구간 추가</button><button id="cancelEdit" hidden>편집 취소</button>
+</div><p><button id="gaps">빈 구간 표시</button> <span class="small note">공백은 미검수 제외로 채웁니다. 실제 제외 사유를 확인한 뒤 저장하세요.</span></p>
+<table><thead><tr><th>원본 시각</th><th>종류·대사·사유</th><th>수정</th></tr></thead><tbody id="rows"></tbody></table>
+<h2>3. 검수 확인 및 저장</h2><div class="card">
+<div class="inline"><label>검수자 이름 <input id="reviewer" autocomplete="name"></label><label>대사 언어 <select id="language"><option value="und">미확인 / 비발화만 있음</option><option value="ko">한국어</option><option value="ja">일본어</option><option value="en">영어</option></select></label></div>
+<p><label><input id="textReviewed" type="checkbox"> 실제 음성을 직접 듣고 모든 대사를 확인했습니다.</label><br><label><input id="activityReviewed" type="checkbox"> 전체 구간의 발화·비발화·제외를 확인했습니다.</label><br><label><input id="timingReviewed" type="checkbox"> 각 대사의 실제 시작·끝까지 확인했습니다. (시간 오차 채점)</label><br><label><input id="draftExposure" type="checkbox"> 검수 도중 자동 인식 초안을 참고했습니다.</label></p>
+<p class="small note">글자 오류율은 공백을 제외합니다. 한국어 단어 오류율은 어절 기준으로 띄어쓰기 영향을 받습니다. 시간 검수를 확인하지 않으면 시간 점수는 나오지 않습니다.</p>
+<button class="primary" id="save">검수 정답 파일 저장</button> <button id="import">기존 정답 불러오기</button><input id="file" type="file" accept=".json" hidden>
+<p class="small">저장된 파일을 프로젝트의 References/IPhone 폴더에 넣으면 다음 평가에서 사용합니다. 기존 정답은 별도 보관하고, 새 검수에는 새 버전을 사용하세요.</p>
+<p id="error" role="status" aria-live="polite"></p></div>
+<p class="note small">이 페이지는 파일을 외부로 보내지 않습니다. 저장한 정답은 사람 검수 확인에 근거하며, 자동 검수로 승인하지 않습니다. 평가가 통과해도 사람 검수가 끝났다는 뜻은 아닙니다.</p>
+<script type="application/json" id="template">__TEMPLATE__</script>
+<script type="application/json" id="metadata">__METADATA__</script>
+<script src="accuracy-review.js"></script>
+<script>
+"use strict";
+AccuracyReview.mount(document,JSON.parse(document.getElementById("template").textContent),JSON.parse(document.getElementById("metadata").textContent));
+</script></html>

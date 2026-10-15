@@ -54,11 +54,12 @@ public struct LocalTranscript: Codable, Sendable {
     public let elapsedSeconds: Double
     /// Zero-based native channel with the greatest energy over the selected range. Channels are not phase-cancelled by downmixing.
     public let sourceChannelIndex: Int
-    /// The repetition guard re-ran Whisper without text conditioning for this result.
+    public var audioSelection: AudioChannelSelection? = nil
+    /// Legacy pipeline metadata: older results could retry using only text repetition.
     public var repetitionRetried: Bool? = nil
-    /// Captions dropped because they repeated the previous caption's text in a loop.
+    /// Legacy pipeline metadata: pipeline 4 and later preserve repetitions, so new results leave this nil.
     public var repeatedCuesRemoved: Int? = nil
-    /// Start times (source seconds) of captions kept from a collapsed loop; the editor flags them.
+    /// Absolute source starts of suspicious repeated captions, preserved for editor review.
     public var repetitionSuspects: [Double]? = nil
     /// Speech stretches without captions that were recognised again on their own, and the captions that recovered.
     public var coverageRepairs: Int? = nil
@@ -72,6 +73,9 @@ public struct LocalTranscript: Codable, Sendable {
     /// Per-window language votes, so a caller can distinguish a clip's dominant language from a
     /// minority language that appears only in some windows.
     public var windowLanguages: [String]? = nil
+    public var languageObservations: [SourceLanguageObservation]? = nil
+    public var languageRepairAttempts: [LanguageRepairAttempt]? = nil
+    public var languageRepairCost: LanguageRepairCost? = nil
 }
 
 /// Live state of a long recognition run, for a progress line that names the current window and an
@@ -135,13 +139,15 @@ public struct SpeechOptions: Equatable, Sendable {
     public var channel = -1
     public var glossary = ""
     public var accurate = true
+    public var languageRepairEnabled = true
     public init() {}
 }
 public enum LocalTranscription {
     public static let engineVersion = "whisper.cpp v1.9.4"
     /// Everything after Whisper that changes results. Part of the checkpoint identity, so windows
-    /// recognised by an older pipeline (before the stable decoder, repetition guard and coverage repair) are not reused.
-    public static let pipelineVersion = engineVersion + " · pipeline 3"
+    /// recognised by an older pipeline (including destructive boundary/repetition filtering) are not reused.
+    // Changing the runtime CPU arithmetic policy invalidates completed windows from the older executable.
+    public static let pipelineVersion = engineVersion + " · cpu-armv8.2-fp16-r3 · pipeline 9"
 
     /// Recognizes long clips in bounded windows. Each window is independently cancellable;
     /// returned cue times remain absolute source times just like `transcribe`.
@@ -157,27 +163,57 @@ public enum LocalTranscription {
                                       checkpoint: TranscriptionCheckpointSession? = nil,
                                       speechRegions: [ClosedRange<Double>]? = nil,
                                       speechEvidence: [ClosedRange<Double>]? = nil,
+                                      audioSelection: AudioChannelSelection? = nil, speechPolicy: VoiceActivityPolicy = .conservative,
                                       onCheckpointError: (@Sendable (Error) -> Void)? = nil,
                                       detail: (@Sendable (TranscriptionProgress) -> Void)? = nil,
                                       progress: (@Sendable (Double?) -> Void)? = nil) async throws -> LocalTranscript {
-        guard duration > .zero, windowSeconds >= 30 else { throw AudioAnalysisError("긴 음성 인식 구간을 확인하세요.") }
+        guard duration > .zero, duration.seconds <= RecognitionCacheSafety.maximumDuration, sourceStart >= .zero, sourceStart.seconds <= RecognitionCacheSafety.maximumStart,
+              windowSeconds.isFinite, (30...3600).contains(windowSeconds), (try? sourceStart.adding(duration)) != nil, (try? sourceStart.adding(MediaTime(1,60_000))) != nil, (try? duration.adding(MediaTime(1,60_000))) != nil else { throw AudioAnalysisError("인식 구간은 24시간 이내, 분할 창은 30~3600초로 선택하세요.") }
+        let endSeconds = sourceStart.seconds + duration.seconds
+        for regions in [speechRegions,speechEvidence].compactMap({ $0 }) {
+            guard regions.count <= RecognitionCacheSafety.maximumRegions else { throw AudioAnalysisError("말소리 후보 개수가 허용 한도를 넘습니다.") }
+            var previous = sourceStart.seconds
+            for r in regions { guard r.lowerBound.isFinite, r.upperBound.isFinite, r.lowerBound >= previous - 0.0001, r.lowerBound >= sourceStart.seconds - 0.0001, r.upperBound > r.lowerBound, r.upperBound <= endSeconds + 0.0001 else { throw AudioAnalysisError("말소리 후보의 원본 범위·정렬을 확인하세요.") }; previous = r.upperBound }
+        }
+        guard audioSelection == nil || audioSelection!.matches(requestedChannel:options.channel) else { throw AudioAnalysisError("인식 채널 선택을 확인하세요.") }
         if duration.seconds <= windowSeconds, checkpoint == nil, speechRegions == nil {
-            return try await transcribe(url: url, sourceStart: sourceStart, duration: duration, configuration: configuration, options: options, progress: progress)
+            return try await transcribe(url: url, sourceStart: sourceStart, duration: duration, configuration: configuration, options: options, verifyModel: true, audioSelection: audioSelection, speechEvidence: speechEvidence.map {e in e.map {($0.lowerBound-sourceStart.seconds)...($0.upperBound-sourceStart.seconds)}}, progress: progress)
         }
         if let checkpoint {
-            guard checkpoint.key.sourceStart == sourceStart, checkpoint.key.duration == duration, checkpoint.key.windowSeconds == windowSeconds,
+            guard checkpoint.key.isReusable, checkpoint.key.sourceStart == sourceStart, checkpoint.key.duration == duration, checkpoint.key.windowSeconds == windowSeconds,
                   checkpoint.key.language == options.language, checkpoint.key.channel == options.channel,
-                  checkpoint.key.glossary == options.glossary, checkpoint.key.accurate == options.accurate,
-                  checkpoint.key.modelSHA256 == configuration.modelSpec.sha256, checkpoint.key.skipsSilence == (speechRegions != nil)
+                  checkpoint.key.glossary == options.glossary, checkpoint.key.accurate == options.accurate, checkpoint.key.languageRepairEnabled == options.languageRepairEnabled,
+                  checkpoint.key.modelSHA256 == configuration.modelSpec.sha256, checkpoint.key.engine == pipelineVersion, checkpoint.key.skipsSilence == (speechRegions != nil),
+                  checkpoint.key.voiceActivityPolicy == (speechRegions == nil ? nil : speechPolicy.rawValue)
             else { throw AudioAnalysisError("체크포인트 설정이 이번 인식 요청과 다릅니다. 체크포인트를 삭제하고 다시 실행하세요.") }
         }
+        var session = checkpoint
+        var lease: TranscriptionCacheLease?
+        if let checkpoint {
+            do {
+                if let supplied = checkpoint.lease { guard supplied.matches(store:checkpoint.store,key:checkpoint.key) else { throw TranscriptionCacheError.activeSession }; lease = supplied }
+                else { lease = try checkpoint.store.beginSession(for:checkpoint.key) }
+            }
+            catch let error as TranscriptionCacheError { throw error }
+            catch { session = nil; onCheckpointError?(error) }
+        }
+        defer { lease?.finish() }
+        let sourceStamp = try MediaFingerprintCache.stat(url)
+        if let checkpoint {
+            let digest = try await FileIdentity.sha256(url)
+            guard digest == checkpoint.key.mediaSHA256, try MediaFingerprintCache.stat(url) == sourceStamp else { throw AudioAnalysisError("체크포인트 원본과 현재 미디어가 다릅니다. 원본을 확인하고 새로 인식하세요.") }
+        }
+        let inputSignature = try RecognitionInputSignature.make(regions:speechRegions,evidence:speechEvidence,selection:audioSelection)
         let started = Date()
         let count = max(1, Int((duration.seconds / windowSeconds).rounded(.up)))
-        let saved = checkpoint.map { $0.store.completedWindows(for: $0.key) } ?? [:]
+        let saved = session.map { $0.store.completedWindows(for:$0.key,inputSignature:inputSignature) } ?? [:]
+        let languageBudget = LanguageRepairBudget()
+        for stored in saved.values { if let cost = stored.languageRepairCost { languageBudget.charge(cost) } }
         var windows: [TranscriptionWindowResult] = []
         var reused = 0, computed = 0, skipped = 0
         var computedSourceSeconds = 0.0, computedElapsed = 0.0
         var modelVerified = false
+        var frozenSelection = audioSelection
         let savedIndices = Set(saved.keys), total = duration.seconds
         // Pure snapshot → value. The Whisper progress callback runs on a pipe-reader thread, so it
         // receives copies of the counters instead of reading this loop's mutable state.
@@ -190,7 +226,7 @@ public enum LocalTranscription {
             return speechRegions.reduce(0) { $0 + max(0, min(b, $1.upperBound) - max(a, $1.lowerBound)) }
         }
         @Sendable func report(_ index: Int, _ within: Double, _ windowStart: Double, _ c: Counters) {
-            let fraction = min(1, (Double(index) + within) * windowSeconds / total)
+            let fraction = TranscriptionTiming.windowProgress(index: index, within: within, windowSeconds: windowSeconds, total: total)
             progress?(fraction)
             guard let detail else { return }
             // Estimate only from windows recognised in this run. Loaded and skipped windows are
@@ -207,9 +243,12 @@ public enum LocalTranscription {
         var counters: Counters { Counters(reused: reused, skipped: skipped, computed: computed, sourceSeconds: computedSourceSeconds, elapsed: computedElapsed) }
         for index in 0..<count {
             try Task.checkCancellation()
+            guard try MediaFingerprintCache.stat(url) == sourceStamp else { throw AudioAnalysisError("인식 중 원본 미디어가 바뀌었습니다. 기존 편집 내용은 유지합니다.") }
             let offset = Double(index) * windowSeconds
-            let length = min(windowSeconds, duration.seconds - offset)
-            let windowStart = MediaTime(seconds: sourceStart.seconds + offset)
+            let windowOffset = MediaTime(seconds:offset)
+            let windowStart = try sourceStart.adding(windowOffset)
+            let windowDuration = min(try duration.subtracting(windowOffset),MediaTime(seconds:windowSeconds))
+            let length = windowDuration.seconds
             report(index, 0, windowStart.seconds, counters)
             if let stored = saved[index] { windows.append(stored); reused += 1; report(index, 1, windowStart.seconds, counters); continue }
             // Only the speech parts of this window reach Whisper (relative to the window start).
@@ -224,57 +263,64 @@ public enum LocalTranscription {
             if let local, local.isEmpty {
                 // No speech candidate anywhere in this window: record it as empty without Whisper,
                 // which also avoids the text Whisper tends to hallucinate over silence.
-                let empty = TranscriptionWindowResult(index: index, sourceStart: windowStart, duration: MediaTime(seconds: length), cues: [],
+                var empty = TranscriptionWindowResult(index: index, sourceStart: windowStart, duration: windowDuration, cues: [],
                                                       language: "", channel: max(0, options.channel), elapsedSeconds: 0, skippedWithoutSpeech: true)
+                empty.inputSignature = inputSignature
                 windows.append(empty); skipped += 1
-                if let checkpoint { do { try checkpoint.store.save(empty, for: checkpoint.key) } catch { onCheckpointError?(error) } }
+                if let checkpoint = session { do { try checkpoint.store.save(empty, for: checkpoint.key) } catch { onCheckpointError?(error) } }
                 report(index, 1, windowStart.seconds, counters); continue
             }
+            if frozenSelection == nil {
+                frozenSelection = try await AudioChannelSelection.resolve(url: url, sourceStart: sourceStart, duration: duration, preferredChannel: options.channel)
+            }
             let begun = Date(), frozen = counters, windowStartSeconds = windowStart.seconds
-            let result = try await transcribe(url: url, sourceStart: windowStart, duration: MediaTime(seconds: length), configuration: configuration,
-                                              options: options, verifyModel: !modelVerified, speechRegions: local,
+            let result = try await transcribe(url: url, sourceStart: windowStart, duration: windowDuration, configuration: configuration,
+                                              options: options, verifyModel: !modelVerified, audioSelection: frozenSelection, speechRegions: local,
                                               speechEvidence: speechEvidence.map { e in e.compactMap { r -> ClosedRange<Double>? in
                                                   let a = max(0, r.lowerBound - windowStart.seconds), b = min(length, r.upperBound - windowStart.seconds)
-                                                  return b > a ? a...b : nil } }) { fraction in
+                                                  return b > a ? a...b : nil } }, languageBudget: languageBudget, languageProbeLimit: LanguageRepair.probeAllowance(window: index, count: count)) { fraction in
                 guard let fraction else { progress?(nil); return }
                 report(index, fraction, windowStartSeconds, frozen)
             }
+            guard try MediaFingerprintCache.stat(url) == sourceStamp else { throw AudioAnalysisError("인식 중 원본 미디어가 바뀌었습니다. 이 구간은 저장하지 않았습니다.") }
             modelVerified = true
-            var window = TranscriptionWindowResult(index: index, sourceStart: windowStart, duration: MediaTime(seconds: length), cues: result.cues,
+            var window = TranscriptionWindowResult(index: index, sourceStart: windowStart, duration: windowDuration, cues: result.cues,
                                                    language: result.language, channel: result.sourceChannelIndex, elapsedSeconds: Date().timeIntervalSince(begun))
+            window.inputSignature = inputSignature
+            window.audioSelection = result.audioSelection
+            window.languageObservations = result.languageObservations; window.languageRepairAttempts = result.languageRepairAttempts; window.languageRepairCost = result.languageRepairCost
             window.repeatedCuesRemoved = result.repeatedCuesRemoved; window.repetitionSuspects = result.repetitionSuspects
             window.coverageRepairs = result.coverageRepairs; window.recoveredCues = result.recoveredCues
             windows.append(window); computed += 1
             computedSourceSeconds += work[index]; computedElapsed += window.elapsedSeconds
             // Saved only after the window fully succeeded, and before the next one starts: a
             // cancellation or crash during the next window cannot lose this one.
-            if let checkpoint { do { try checkpoint.store.save(window, for: checkpoint.key) } catch { onCheckpointError?(error) } }
+            if let checkpoint = session { do { try checkpoint.store.save(window, for: checkpoint.key) } catch { onCheckpointError?(error) } }
             report(index, 1, windowStart.seconds, counters)
         }
-        var allCues: [CaptionCue] = []
+        try Task.checkCancellation()
+        guard try MediaFingerprintCache.stat(url) == sourceStamp else { throw AudioAnalysisError("인식 중 원본 미디어가 바뀌었습니다. 기존 편집 내용은 유지합니다.") }
         var detected: [String: Int] = [:]
         var channel = max(0, options.channel)
         for window in windows.sorted(by: { $0.index < $1.index }) {
-            let boundary = window.sourceStart.seconds + (window.index == 0 ? 0 : 0.5)
-            allCues.append(contentsOf: window.cues.filter { $0.start.seconds >= boundary })
             if !window.language.isEmpty { detected[window.language, default: 0] += 1; channel = window.channel }
         }
-        var unique: [CaptionCue] = []
-        for cue in allCues.sorted(by: { $0.start < $1.start }) {
-            if let previous = unique.last, abs(previous.start.seconds - cue.start.seconds) < 0.2 && previous.text == cue.text { continue }
-            unique.append(cue)
-        }
+        let assembled = TranscriptionTiming.assembledCues(windows)
         guard let language = detected.max(by: { $0.value < $1.value || ($0.value == $1.value && $0.key > $1.key) })?.key else {
             throw AudioAnalysisError("선택 구간에서 음성 후보를 찾지 못했습니다. 무음 건너뛰기를 끄거나 대사가 있는 구간을 선택하세요.")
         }
-        var transcript = LocalTranscript(cues: unique, engine: "\(engineVersion) · 분할 인식", language: language,
+        var transcript = LocalTranscript(cues: assembled, engine: "\(engineVersion) · 분할 인식", language: language,
                                          sourceStart: sourceStart, duration: duration, elapsedSeconds: Date().timeIntervalSince(started), sourceChannelIndex: channel)
+        transcript.audioSelection = frozenSelection ?? windows.compactMap(\.audioSelection).first
         transcript.reusedWindows = reused; transcript.computedWindows = computed; transcript.skippedWindows = skipped
         let removed = windows.reduce(0) { $0 + ($1.repeatedCuesRemoved ?? 0) }, suspects = windows.flatMap { $0.repetitionSuspects ?? [] }.sorted()
         transcript.repeatedCuesRemoved = removed > 0 ? removed : nil; transcript.repetitionSuspects = suspects.isEmpty ? nil : suspects
         let repairs = windows.reduce(0) { $0 + ($1.coverageRepairs ?? 0) }, recoveredTotal = windows.reduce(0) { $0 + ($1.recoveredCues ?? 0) }
         transcript.coverageRepairs = repairs > 0 ? repairs : nil; transcript.recoveredCues = recoveredTotal > 0 ? recoveredTotal : nil
         transcript.windowLanguages = windows.sorted(by: { $0.index < $1.index }).map(\.language)
+        transcript.languageObservations = windows.flatMap { $0.languageObservations ?? [] }
+        transcript.languageRepairAttempts = windows.flatMap { $0.languageRepairAttempts ?? [] }
+        transcript.languageRepairCost = languageBudget.used
         return transcript
     }
 
@@ -302,7 +348,8 @@ public enum LocalTranscription {
         try await transcribe(url: url, sourceStart: sourceStart, duration: duration, configuration: configuration, options: options, verifyModel: true, progress: progress)
     }
     static func transcribe(url: URL, sourceStart: MediaTime, duration: MediaTime?, configuration: WhisperConfiguration,
-                           options: SpeechOptions, verifyModel: Bool, speechRegions: [ClosedRange<Double>]? = nil, speechEvidence: [ClosedRange<Double>]? = nil,
+                           options: SpeechOptions, verifyModel: Bool, audioSelection: AudioChannelSelection? = nil, speechRegions: [ClosedRange<Double>]? = nil, speechEvidence: [ClosedRange<Double>]? = nil, languageBudget: LanguageRepairBudget? = nil, languageProbeLimit: Int? = nil,
+                           diagnosticDirectory: URL? = nil,
                            progress: (@Sendable (Double?) -> Void)?) async throws -> LocalTranscript {
         guard ["ko", "en", "ja", "auto"].contains(options.language), (-1...31).contains(options.channel), options.glossary.count <= 500 else { throw AudioAnalysisError("인식 언어·채널·500자 이내 용어 힌트를 확인하세요.") }
         let begun = Date(); try Task.checkCancellation()
@@ -312,11 +359,14 @@ public enum LocalTranscription {
         // The size check in availability() runs every window; the full digest once per run.
         if verifyModel { try WhisperModelInstaller.verifyModel(at: configuration.modelURL, spec: configuration.modelSpec) }
         let workspace = FileManager.default.temporaryDirectory.appendingPathComponent("JHCutSpeech-\(UUID().uuidString)", isDirectory: true)
-        try FileManager.default.createDirectory(at: workspace, withIntermediateDirectories: true)
+        try FileManager.default.createDirectory(at: workspace, withIntermediateDirectories: true, attributes: [.posixPermissions: 0o700])
         defer { try? FileManager.default.removeItem(at: workspace) }
         let wav = workspace.appendingPathComponent("source.wav")
+        let selection: AudioChannelSelection
+        if let audioSelection { selection = audioSelection }
+        else { selection = try await AudioChannelSelection.resolve(url: url, sourceStart: sourceStart, duration: duration, preferredChannel: options.channel) }
         var sourceChannelIndex = 0
-        let extracted = try await extractAudio(url: url, sourceStart: sourceStart, duration: duration, destination: wav, preferredChannel: options.channel) { sourceChannelIndex = $0 }
+        let extracted = try await extractAudio(url: url, sourceStart: sourceStart, duration: duration, destination: wav, preferredChannel: options.channel, audioSelection: selection) { sourceChannelIndex = $0 }
         progress?(0.1)
         // Recognise a compacted copy (speech regions only) when that removes a meaningful share.
         var recognised = wav, timeline: CompactedTimeline?
@@ -328,57 +378,30 @@ public enum LocalTranscription {
                 try writeCompacted(from: wav, to: recognised, timeline: candidate); timeline = candidate
             }
         }
-        // One Whisper pass over `recognised`; `extra` adds arguments (used for the loop retry).
+        // One Whisper pass over `recognised`; repair passes can supply a different compacted map.
         func recognise(_ name: String, extra: [String], audio: URL? = nil, map: CompactedTimeline?? = nil,
+                       forcedLanguage: String? = nil, timeout: Double? = nil,
                        progress: (@Sendable (Double?) -> Void)?) async throws -> (cues: [CaptionCue], language: String) {
             let prefix = workspace.appendingPathComponent(name)
             let input = audio ?? recognised, timeline = map ?? timeline
-            var args = ["-m", configuration.modelURL.path, "-f", input.path, "-l", options.language, "-osrt", "-oj", "-of", prefix.path,
+            var args = ["-m", configuration.modelURL.path, "-f", input.path, "-l", forcedLanguage ?? options.language, "-osrt", "-oj", "-of", prefix.path,
                         "-ml", "42", "-sow", "-pp", "-ng", "-t", String(min(6, max(1, ProcessInfo.processInfo.activeProcessorCount - 1)))]
             args += ["-bs", options.accurate ? "5" : "1", "-bo", options.accurate ? "5" : "1"]
             if !options.glossary.isEmpty { args += ["--prompt", options.glossary] }
             args += extra
-            try await run(executable: configuration.runtimeURL, arguments: args, directory: workspace, progress: progress)
-            try Task.checkCancellation()
-            // whisper.cpp can cut a multibyte character at a segment boundary, leaving invalid UTF-8
-            // in both files. Decode leniently (the broken bytes become U+FFFD and are removed) instead
-            // of failing the whole recognition.
-            let srt = String(decoding: try Data(contentsOf: prefix.appendingPathExtension("srt")), as: UTF8.self).replacingOccurrences(of: "\u{FFFD}", with: "")
-            let jsonText = String(decoding: try Data(contentsOf: prefix.appendingPathExtension("json")), as: UTF8.self)
-            let json = (try? JSONSerialization.jsonObject(with: Data(jsonText.utf8))) as? [String: Any]
-            var reported = (json?["result"] as? [String: Any])?["language"] as? String
-            if reported == nil, let match = jsonText.range(of: #""language"\s*:\s*"([a-z]{2,3})""#, options: .regularExpression) {
-                reported = jsonText[match].split(separator: "\"").dropFirst(2).first.map(String.init)
-            }
-            guard let language = reported, !language.isEmpty, language != "auto" else { throw AudioAnalysisError("인식 결과의 실제 언어를 확인하지 못했습니다. 원본 언어를 직접 선택해 다시 시도하세요.") }
-            let relative = SRTCodec.parseRecognizerOutput(srt).cues, limit = sourceStart.seconds + extracted
-            let cues = relative.compactMap { cue -> CaptionCue? in
-                if let timeline {
-                    guard let range = timeline.sourceRange(compactStart: cue.start.seconds, compactEnd: cue.start.seconds + cue.duration.seconds) else { return nil }
-                    let start = sourceStart.seconds + range.lowerBound, end = min(limit, sourceStart.seconds + range.upperBound)
-                    guard end > start, !cue.text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return nil }
-                    return CaptionCue(start: MediaTime(seconds: start), duration: MediaTime(seconds: end - start), text: cue.text.trimmingCharacters(in: .whitespacesAndNewlines))
-                }
-                let start = max(sourceStart.seconds, sourceStart.seconds + cue.start.seconds)
-                let end = min(limit, sourceStart.seconds + cue.start.seconds + cue.duration.seconds)
-                guard end > start, !cue.text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return nil }
-                return CaptionCue(start: MediaTime(seconds: start), duration: MediaTime(seconds: end - start), text: cue.text.trimmingCharacters(in: .whitespacesAndNewlines))
-            }
-            return (cues, language)
+            // A successful child exit is not sufficient: whisper.cpp can skip unreadable input
+            // or fail to open an output and still exit 0. Validate both requested outputs and
+            // preserve a private, content-free diagnostic before the workspace defer removes it.
+            let output = try await WhisperOutputContract.recognize(executable: configuration.runtimeURL, arguments: args,
+                directory: workspace, prefix: prefix, timeout: timeout, diagnosticDirectory: diagnosticDirectory, progress: progress)
+            let cues = TranscriptionTiming.sourceCues(output.cues, sourceStart: sourceStart,
+                                                     duration: min(duration ?? MediaTime(seconds:extracted),MediaTime(seconds: extracted)), compacted: timeline)
+            return (cues, output.language)
         }
         var (cues, language) = try await recognise("transcript", extra: [], progress: progress)
-        // Repetition loop guard. Measured on real iPhone videos: Whisper sometimes repeats one line
-        // for minutes (113 of 131 captions in one 5-minute window). Retrying the same audio without
-        // text conditioning (-mc 0) cut that to 19; the result with fewer repeats is kept, and any
-        // run that remains is collapsed to its first caption and reported for review.
-        var retried = false
-        if RepetitionGuard.longestRun(cues) > 0 {
-            retried = true
-            let second = try await recognise("transcript-retry", extra: ["-mc", "0"], progress: nil)
-            if RepetitionGuard.longestRun(second.cues) < RepetitionGuard.longestRun(cues) { cues = second.cues; language = second.language }
-        }
-        var guarded = RepetitionGuard.collapsed(cues)
-        cues = guarded.cues
+        // Text repetition is a review hint, not acoustic evidence of hallucination. Replacing
+        // a pass with fewer repeated lines or collapsing it can erase real consecutive speech.
+        var guarded = RepetitionGuard.reviewed(cues)
         // Coverage repair (non-speech skipping only). Measured on a real iPhone video: after a
         // hallucinated bracket line at the start of the speech-only audio, Whisper returned nothing
         // for ~13 s of dialogue inside a speech region. Every speech stretch of `CoverageRepair.minimumGap`
@@ -404,7 +427,7 @@ public enum LocalTranscription {
                     let audio = workspace.appendingPathComponent("gap-\(i)-\(attempt).wav")
                     try writeCompacted(from: wav, to: audio, timeline: piece)
                     let again = try await recognise("gap-\(i)-\(attempt)", extra: [], audio: audio, map: .some(piece), progress: nil)
-                    let found = RepetitionGuard.collapsed(again.cues).cues.filter { !CoverageRepair.isMarker($0.text) }
+                    let found = RepetitionGuard.reviewed(again.cues).cues.filter { !CoverageRepair.isMarker($0.text) }
                     // Retry timestamps often spill into the context. Trim each recovered caption to
                     // the gap (which no caption covers) instead of dropping it for touching a neighbour.
                     let fresh = found.compactMap { cue -> CaptionCue? in
@@ -424,12 +447,86 @@ public enum LocalTranscription {
                 }
             }
             cues.sort { $0.start < $1.start }
-            if recovered > 0 { guarded = (cues, guarded.removed, guarded.flagged) }
+            if recovered > 0 { guarded = RepetitionGuard.reviewed(cues) }
         }
+        // Independent language probes hear CONTIGUOUS original audio, not VAD joins. A strong
+        // acoustic posterior plus measured speech can nominate a bounded forced-language retry.
+        let budget = languageBudget ?? LanguageRepairBudget(), before = budget.used
+        let end = sourceStart.seconds + extracted
+        var observations = [SourceLanguageObservation(start:sourceStart.seconds,end:end,language:CaptionLanguage(rawValue:language) == nil ? nil:language,candidate:language,
+            method:.recognizerWindow,state:.uncertain,reason:"wholeWindowRecognizerLanguage")]
+        var attempts: [LanguageRepairAttempt] = []
+        if options.language != "auto" {
+            observations.append(SourceLanguageObservation(start:sourceStart.seconds,end:end,language:options.language,method:.manual,state:.specified,reason:"userForcedLanguage"))
+        } else if options.languageRepairEnabled {
+            let nominated = LanguageRepair.ranges(cues:cues,start:sourceStart.seconds,end:end)
+            let priority = Set(nominated.indices.filter { index in
+                let range = nominated[index]
+                return cues.contains { cue in
+                    let decision = SentenceLanguage.detect(cue.text, clipLanguage: language)
+                    return !decision.needsReview && decision.language != language && cue.start.seconds < range.upperBound && cue.start.seconds + cue.duration.seconds > range.lowerBound
+                }
+            })
+            let ranges = LanguageRepair.sampledRanges(nominated, priority: priority, limit: languageProbeLimit ?? LanguageRepairPolicy.maximumProbes)
+            if nominated.isEmpty, extracted < LanguageRepairPolicy.minimumAudio {
+                observations.append(LanguageRepair.observation(range:sourceStart.seconds...end,result:nil,speechSeconds:0,reason:"shortAudio"))
+            }
+            var repairedRanges: [ClosedRange<Double>] = []
+            for (i,range) in ranges.enumerated() {
+                try Task.checkCancellation()
+                guard budget.reserveProbe(range.upperBound-range.lowerBound) else { break }
+                let begun = Date()
+                defer { budget.elapsed(Date().timeIntervalSince(begun)) }
+                let piece = CompactedTimeline(regions:[(range.lowerBound-sourceStart.seconds)...(range.upperBound-sourceStart.seconds)],recordingDuration:extracted)
+                let audio = workspace.appendingPathComponent("language-\(i).wav")
+                do {
+                    try writeCompacted(from:wav,to:audio,timeline:piece)
+                    let speech: Double
+                    if let speechEvidence {
+                        speech = speechEvidence.reduce(0) { $0 + max(0,min(range.upperBound-sourceStart.seconds,$1.upperBound)-max(range.lowerBound-sourceStart.seconds,$1.lowerBound)) }
+                    } else {
+                        let report = try await VoiceActivity.analyze(url:audio,sourceStart:.zero,duration:MediaTime(seconds:range.upperBound-range.lowerBound))
+                        speech = report.confidentSpeech.reduce(0) {$0+$1.upperBound-$1.lowerBound}
+                    }
+                    let available = budget.remainingWall-Date().timeIntervalSince(begun)
+                    guard available > 0.05 else { observations.append(LanguageRepair.observation(range:range,result:nil,speechSeconds:speech,reason:"timeBudget")); break }
+                    let log = try await run(executable:configuration.runtimeURL,arguments:["-m",configuration.modelURL.path,"-f",audio.path,"-dl","-ng","-t","4"],directory:workspace,timeout:available,progress:nil)
+                    let observation = LanguageRepair.observation(range:range,result:SourceLanguageAnalysis.acousticResult(log:log),speechSeconds:speech)
+                    observations.append(observation)
+                    guard observation.state == .supported, let target = observation.language else { continue }
+                    let owned = cues.filter {$0.start.seconds < range.upperBound && $0.start.seconds+$0.duration.seconds > range.lowerBound && !CoverageRepair.isMarker($0.text)}
+                    let conflict = target != language || owned.contains {let d=SentenceLanguage.detect($0.text,clipLanguage:language);return !d.needsReview && d.language != target}
+                    guard conflict,let core=LanguageRepair.coreRange(cues:cues,probe:range),
+                          !repairedRanges.contains(where: {$0.lowerBound < core.upperBound && $0.upperBound > core.lowerBound}) else {continue}
+                    let a=core.lowerBound,b=core.upperBound
+                    let hasOwned=cues.contains {$0.start.seconds < b && $0.start.seconds+$0.duration.seconds > a}
+                    // At least six seconds of continuous core is already context. An empty gap
+                    // has no old cue boundaries to borrow; extra padding must not spill over it.
+                    let lo=hasOwned ? max(sourceStart.seconds,a-1):a,hi=hasOwned ? min(end,b+1):b
+                    let span=hi-lo, remaining=budget.remainingWall-Date().timeIntervalSince(begun)
+                    guard remaining > 0.05,budget.reserveRetry(span) else { continue }
+                    repairedRanges.append(core)
+                    let context=CompactedTimeline(regions:[(lo-sourceStart.seconds)...(hi-sourceStart.seconds)],recordingDuration:extracted)
+                    let retryAudio=workspace.appendingPathComponent("language-retry-\(i).wav")
+                    do {
+                        try writeCompacted(from:wav,to:retryAudio,timeline:context)
+                        let again=try await recognise("language-retry-\(i)",extra:[],audio:retryAudio,map:.some(context),forcedLanguage:target,timeout:remaining,progress:nil)
+                        let merged=LanguageRepair.merge(original:cues,replacement:again.cues,range:core,language:target)
+                        cues=merged.cues; attempts.append(LanguageRepairAttempt(start:a,end:b,language:target,outcome:merged.outcome))
+                    } catch { if Task.isCancelled || error is CancellationError {throw CancellationError()}; attempts.append(LanguageRepairAttempt(start:a,end:b,language:target,outcome:"failed")) }
+                } catch {
+                    if Task.isCancelled || error is CancellationError {throw CancellationError()}
+                    observations.append(LanguageRepair.observation(range:range,result:nil,speechSeconds:0,reason:"probeUnavailable: " + String(error.localizedDescription.prefix(200))))
+                }
+            }
+        }
+        try Task.checkCancellation()
+        guarded=RepetitionGuard.reviewed(cues)
         progress?(1)
         var transcript = LocalTranscript(cues: cues, engine: "\(engineVersion) · \(configuration.modelSpec.name) · CPU/Accelerate", language: language, sourceStart: sourceStart,
-                                         duration: MediaTime(seconds: extracted), elapsedSeconds: Date().timeIntervalSince(begun), sourceChannelIndex: sourceChannelIndex)
-        transcript.repetitionRetried = retried ? true : nil
+                                         duration: min(duration ?? MediaTime(seconds:extracted),MediaTime(seconds: extracted)), elapsedSeconds: Date().timeIntervalSince(begun), sourceChannelIndex: sourceChannelIndex)
+        transcript.audioSelection = selection
+        transcript.languageObservations = observations; transcript.languageRepairAttempts = attempts; transcript.languageRepairCost = budget.difference(from:before)
         transcript.coverageRepairs = repairedSpans > 0 ? repairedSpans : nil
         transcript.recoveredCues = recovered > 0 ? recovered : nil
         transcript.repeatedCuesRemoved = guarded.removed > 0 ? guarded.removed : nil
@@ -446,11 +543,16 @@ public enum LocalTranscription {
         for (i, piece) in timeline.pieces.enumerated() {
             try Task.checkCancellation()
             let first = AVAudioFramePosition((piece.sourceStart * rate).rounded())
-            let count = AVAudioFrameCount(min(Double(input.length - first), (piece.length * rate).rounded()))
-            guard first < input.length, count > 0, let buffer = AVAudioPCMBuffer(pcmFormat: format, frameCapacity: count) else { continue }
-            input.framePosition = first
-            try input.read(into: buffer, frameCount: count)
-            try output.write(from: buffer)
+            guard first >= 0,first < input.length else {throw AudioAnalysisError("언어 확인 오디오 범위가 원본을 벗어났습니다.")}
+            var remaining = min(input.length-first,AVAudioFramePosition((piece.length*rate).rounded()))
+            guard remaining > 0,let buffer=AVAudioPCMBuffer(pcmFormat:format,frameCapacity:16_384) else {throw AudioAnalysisError("음성 복사 버퍼를 만들 수 없습니다.")}
+            input.framePosition=first
+            while remaining > 0 {
+                try Task.checkCancellation()
+                try input.read(into:buffer,frameCount:AVAudioFrameCount(min(remaining,16_384)))
+                guard buffer.frameLength > 0 else {throw AudioAnalysisError("음성 복사가 끝나기 전에 원본 읽기가 종료됐습니다.")}
+                try output.write(from:buffer);remaining -= AVAudioFramePosition(buffer.frameLength)
+            }
             if i < timeline.pieces.count - 1, let silence = AVAudioPCMBuffer(pcmFormat: format, frameCapacity: joinFrames) {
                 silence.frameLength = joinFrames
                 memset(silence.int16ChannelData![0], 0, Int(joinFrames) * MemoryLayout<Int16>.size)
@@ -458,36 +560,12 @@ public enum LocalTranscription {
             }
         }
     }
-    static func extractAudio(url: URL, sourceStart: MediaTime, duration: MediaTime?, destination: URL, preferredChannel: Int = -1, channelSelected: ((Int) -> Void)? = nil) async throws -> Double {
-        // Two streaming passes choose ONE consistent highest-energy native channel, then resample it to mono.
-        // This avoids cancellation of opposite-phase stereo. Dialogue on a quieter separate channel may need external channel isolation.
-        var channelEnergy: [Double] = []
-        var cross: [[Double]] = []
-        _ = try await SourcePCM.readStable(url: url, sourceStart: sourceStart, duration: duration) { chunk in
-            let n = chunk.channels
-            if channelEnergy.isEmpty { channelEnergy = [Double](repeating: 0, count: n); cross = [[Double]](repeating: [Double](repeating: 0, count: n), count: n) }
-            guard channelEnergy.count == n else { throw AudioAnalysisError("음성 추출 중 채널 수가 변경되었습니다.") }
-            for frame in 0..<(chunk.values.count / n) {
-                for a in 0..<n {
-                    let x = Double(chunk.values[frame * n + a]); channelEnergy[a] += x * x
-                    for b in (a + 1)..<max(a + 1, n) { cross[a][b] += x * Double(chunk.values[frame * n + b]) }
-                }
-            }
-        }
-        let ranked = channelEnergy.indices.sorted { channelEnergy[$0] > channelEnergy[$1] }
-        let selectedChannel = preferredChannel >= 0 ? preferredChannel : (ranked.first ?? 0)
-        guard channelEnergy.indices.contains(selectedChannel) else { throw AudioAnalysisError("선택한 채널이 없습니다. 자동 선택 또는 실제 채널 번호를 선택하세요.") }
-        // Automatic mode: when a second channel carries real signal (≥ −10 dB) and is not an
-        // inverted copy (correlation ≥ −0.5), average the two. Picking only the loudest channel
-        // silently dropped the other person on recordings with one microphone per channel;
-        // an opposite-phase pair still uses one channel so it cannot cancel.
-        var mixChannel: Int? = nil
-        if preferredChannel < 0, ranked.count > 1 {
-            let a = ranked[0], b = ranked[1], ea = channelEnergy[a], eb = channelEnergy[b]
-            let correlation = ea > 0 && eb > 0 ? cross[min(a, b)][max(a, b)] / (ea * eb).squareRoot() : 0
-            if eb >= ea * 0.1, correlation >= -0.5 { mixChannel = b }
-        }
-        channelSelected?(selectedChannel)
+    static func extractAudio(url: URL, sourceStart: MediaTime, duration: MediaTime?, destination: URL, preferredChannel: Int = -1, audioSelection: AudioChannelSelection? = nil, channelSelected: ((Int) -> Void)? = nil) async throws -> Double {
+        let selection: AudioChannelSelection
+        if let audioSelection { selection = audioSelection }
+        else { selection = try await AudioChannelSelection.resolve(url: url, sourceStart: sourceStart, duration: duration, preferredChannel: preferredChannel) }
+        guard preferredChannel < 0 || (selection.primary == preferredChannel && selection.secondary == nil) else { throw AudioAnalysisError("분석 채널과 인식 채널이 다릅니다.") }
+        channelSelected?(selection.primary)
         // Decode at the NATIVE rate and resample here, in fixed-size blocks. Letting the reader
         // resample produced buffers whose timestamps jittered by a sample between runs; re-placing
         // every buffer by its rounded timestamp then inserted or dropped a sample mid-speech, so the
@@ -546,7 +624,6 @@ public enum LocalTranscription {
             }
         }
         let range = try await SourcePCM.readStable(url: url, sourceStart: sourceStart, duration: duration) { chunk in
-            guard selectedChannel < chunk.channels else { throw AudioAnalysisError("선택한 음성 채널을 읽을 수 없습니다.") }
             if converter == nil {
                 nativeRate = chunk.sampleRate
                 guard let source = AVAudioFormat(commonFormat: .pcmFormatFloat32, sampleRate: nativeRate, channels: 1, interleaved: false),
@@ -555,10 +632,7 @@ public enum LocalTranscription {
                 converter = made
             }
             guard chunk.sampleRate == nativeRate else { throw AudioAnalysisError("음성 추출 중 샘플레이트가 변경되었습니다.") }
-            var mono = stride(from: selectedChannel, to: chunk.values.count, by: chunk.channels).map { chunk.values[$0] }
-            if let other = mixChannel {
-                for (i, index) in stride(from: other, to: chunk.values.count, by: chunk.channels).enumerated() where i < mono.count { mono[i] = (mono[i] + chunk.values[index]) * 0.5 }
-            }
+            var mono = try selection.mono(chunk)
             let expected = Int64(((chunk.start - sourceStart.seconds) * nativeRate).rounded())
             let tolerance = Int64(nativeRate * 0.002)
             if expected > nativeFrames + tolerance {
@@ -583,42 +657,76 @@ public enum LocalTranscription {
         file = nil // Close the WAV header before the subprocess opens it.
         return range.duration
     }
-    static func run(executable: URL, arguments: [String], directory: URL,
-                            progress: (@Sendable (Double?) -> Void)?) async throws {
+    @discardableResult static func run(executable: URL, arguments: [String], directory: URL, timeout: Double? = nil,
+                            progress: (@Sendable (Double?) -> Void)?) async throws -> String {
+        let result = try await execute(executable: executable, arguments: arguments, directory: directory, timeout: timeout, progress: progress)
+        try WhisperOutputContract.requireProcessSuccess(result, phase: "languageProbe", directory: directory)
+        return result.stderrTail
+    }
+    /// Captures termination and drains stderr before returning. Raw stderr remains in memory
+    /// for acoustic language parsing; user-visible errors and disk diagnostics never include it.
+    static func execute(executable: URL, arguments: [String], directory: URL, timeout: Double? = nil,
+                        progress: (@Sendable (Double?) -> Void)?) async throws -> WhisperProcessResult {
+        let started = ProcessInfo.processInfo.systemUptime
         let process = Process(), output = Pipe(), controller = ProcessController()
         process.executableURL = executable; process.arguments = arguments; process.currentDirectoryURL = directory
         process.standardOutput = FileHandle.nullDevice; process.standardError = output
         let log = LockedLog()
-        output.fileHandleForReading.readabilityHandler = { handle in
-            let data = handle.availableData
-            guard !data.isEmpty else { handle.readabilityHandler = nil; return }
-            let text = String(decoding: data, as: UTF8.self); log.append(text)
-            for line in text.components(separatedBy: .newlines) where line.contains("progress") {
-                let components = line.components(separatedBy: CharacterSet.decimalDigits.inverted).filter { !$0.isEmpty }
-                if let value = components.compactMap(Double.init).last, (0...100).contains(value) { progress?(0.1 + 0.85 * value / 100) }
+        let drain = DispatchGroup(); drain.enter()
+        DispatchQueue.global().async {
+            defer { drain.leave() }
+            while true {
+                let data = output.fileHandleForReading.availableData
+                if data.isEmpty {break}
+                let text=String(decoding:data,as:UTF8.self);log.append(text)
+                for line in text.components(separatedBy:.newlines) where line.contains("progress") {
+                    let components=line.components(separatedBy:CharacterSet.decimalDigits.inverted).filter {!$0.isEmpty}
+                    if let value=components.compactMap(Double.init).last,(0...100).contains(value) {progress?(0.1+0.85*value/100)}
+                }
             }
         }
-        defer { output.fileHandleForReading.readabilityHandler = nil; try? output.fileHandleForReading.close() }
-        try await withTaskCancellationHandler(operation: {
-            try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, Error>) in
+        defer { try? output.fileHandleForReading.close() }
+        let deadline = timeout.map { seconds in DispatchWorkItem { controller.expire() } }
+        defer { deadline?.cancel() }
+        return try await withTaskCancellationHandler(operation: {
+            try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<WhisperProcessResult, Error>) in
                 process.terminationHandler = { task in
+                  drain.notify(queue:.global()) {
                     if controller.cancelled { continuation.resume(throwing: CancellationError()) }
-                    else if task.terminationStatus == 0 { continuation.resume() }
-                    else { continuation.resume(throwing: AudioAnalysisError("로컬 음성 인식 실패 (\(task.terminationStatus)): \(log.tail)")) }
+                    else { continuation.resume(returning: WhisperProcessResult(status: task.terminationStatus,
+                        reason: task.terminationReason == .exit ? .exit : .uncaughtSignal,
+                        timedOut: controller.timedOut, elapsedSeconds: max(0, ProcessInfo.processInfo.systemUptime - started),
+                        stderrTail: log.tail, launchErrorDomain: nil, launchErrorCode: nil)) }
+                  }
                 }
-                do { try controller.start(process); progress?(nil) }
-                catch { process.terminationHandler = nil; continuation.resume(throwing: error) }
+                do { try controller.start(process); try? output.fileHandleForWriting.close(); if let timeout,let deadline { DispatchQueue.global().asyncAfter(deadline:.now()+max(0.01,timeout),execute:deadline) }; progress?(nil) }
+                catch {
+                    try? output.fileHandleForWriting.close(); process.terminationHandler = nil
+                    drain.notify(queue:.global()) {
+                        if controller.cancelled || error is CancellationError { continuation.resume(throwing: CancellationError()) }
+                        else { let issue = error as NSError
+                            continuation.resume(returning: WhisperProcessResult(status: nil, reason: .launchFailure,
+                                timedOut: false, elapsedSeconds: max(0, ProcessInfo.processInfo.systemUptime - started),
+                                stderrTail: log.tail, launchErrorDomain: issue.domain, launchErrorCode: issue.code)) }
+                    }
+                }
             }
         }, onCancel: { controller.cancel() })
     }
     private final class LockedLog: @unchecked Sendable {
         private let lock = NSLock(); private var value = ""
-        func append(_ text: String) { lock.lock(); defer { lock.unlock() }; value = String((value + text).suffix(3000)) }
+        func append(_ text: String) { lock.lock(); defer { lock.unlock() }; value = String((value + text).suffix(16_384)) }
         var tail: String { lock.lock(); defer { lock.unlock() }; return value }
     }
     private final class ProcessController: @unchecked Sendable {
-        private let lock = NSLock(); private var process: Process?; private var didCancel = false
+        private let lock = NSLock(); private var process: Process?; private var didCancel = false; private var didTimeout = false
         var cancelled: Bool { lock.lock(); defer { lock.unlock() }; return didCancel }
+        var timedOut: Bool {lock.lock();defer {lock.unlock()};return didTimeout}
+        func expire() {lock.lock();didTimeout=true;let running=process;lock.unlock();stop(running)}
+        private func stop(_ running:Process?) {
+            guard let running,running.isRunning else {return};running.terminate()
+            DispatchQueue.global().asyncAfter(deadline:.now()+1) {if running.isRunning {kill(running.processIdentifier,SIGKILL)}}
+        }
         func start(_ process: Process) throws {
             lock.lock(); defer { lock.unlock() }
             guard !didCancel else { throw CancellationError() }
@@ -626,9 +734,7 @@ public enum LocalTranscription {
         }
         func cancel() {
             lock.lock(); didCancel = true; let running = process; lock.unlock()
-            guard let running, running.isRunning else { return }
-            running.terminate()
-            DispatchQueue.global().asyncAfter(deadline: .now() + 1) { if running.isRunning { kill(running.processIdentifier, SIGKILL) } }
+            stop(running)
         }
     }
 }
@@ -663,7 +769,7 @@ public enum AppleLocalTranscription {
     }
 }
 
-/// Detects and collapses Whisper repetition loops: the same line (after normalisation) repeated
+/// Flags possible Whisper repetition loops without deleting unverified speech: the same line (after normalisation) repeated
 /// in consecutive captions, or two lines alternating.
 public enum RepetitionGuard {
     public static let minimumRun = 3
@@ -698,25 +804,32 @@ public enum RepetitionGuard {
     }
     /// Short interjections ("네", "어?") genuinely repeat; they count as a loop only from 6 repeats.
     static func qualifies(_ key: String, _ run: Int) -> Bool { run >= (key.count >= 4 ? minimumRun : 6) }
-    /// Keeps the first caption of each loop (first two of an alternation) and drops the repeats.
-    public static func collapsed(_ cues: [CaptionCue]) -> (cues: [CaptionCue], removed: Int, flagged: [Double]) {
+    /// Flags every caption in a suspicious run. Identical text alone cannot prove a hallucination.
+    public static func reviewed(_ cues: [CaptionCue]) -> (cues: [CaptionCue], removed: Int, flagged: [Double]) {
         let keys = cues.map { loopKey($0.text) }
-        var drop = Set<Int>(), flagged: [Double] = []
+        var suspects = Set<Int>()
         var i = 0
         while i < cues.count {
             var j = i + 1
             while j < cues.count, !keys[i].isEmpty, keys[j] == keys[i] { j += 1 }
-            if qualifies(keys[i], j - i) { flagged.append(cues[i].start.seconds); for k in (i + 1)..<j { drop.insert(k) } }
+            if qualifies(keys[i], j - i) { for k in i..<j { suspects.insert(k) } }
             i = j
         }
         i = 0
         while i + 2 < cues.count {
             var j = i + 2
             while j < cues.count, !keys[j].isEmpty, keys[j] == keys[j - 2], keys[j] != keys[j - 1] { j += 1 }
-            if j - i >= minimumRun * 2 && qualifies(keys[i], (j - i) / 2) { flagged.append(cues[i].start.seconds); for k in (i + 2)..<j { drop.insert(k) }; i = j } else { i += 1 }
+            if j - i >= minimumRun * 2 && qualifies(keys[i], (j - i) / 2) { for k in i..<j { suspects.insert(k) }; i = j } else { i += 1 }
         }
-        return (cues.enumerated().filter { !drop.contains($0.offset) }.map(\.element), drop.count, flagged.sorted())
+        let flagged = suspects.sorted().map { cues[$0].start.seconds }
+        return (cues, 0, flagged)
     }
+    /// Source compatibility for callers of the older API; no destructive collapsing remains.
+    @available(*, deprecated, renamed: "reviewed")
+    public static func collapsed(_ cues: [CaptionCue]) -> (cues: [CaptionCue], removed: Int, flagged: [Double]) {
+        reviewed(cues)
+    }
+
 }
 
 /// Finds speech that the main recognition pass left without any caption.

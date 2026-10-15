@@ -66,7 +66,12 @@ public enum SentenceLanguage {
         recognizer.languageConstraints = [.korean, .japanese, .english]
         recognizer.processString(text)
         var result: [String: Double] = [:]
-        for (language, value) in recognizer.languageHypotheses(withMaximum: 3) where CaptionLanguage(rawValue: language.rawValue) != nil { result[language.rawValue] = value }
+        for (language, value) in recognizer.languageHypotheses(withMaximum: 3) where CaptionLanguage(rawValue: language.rawValue) != nil {
+            // NaturalLanguage may return 1.000000119 (Float roundoff). Keep the probability
+            // contract finite and bounded; larger or nonfinite anomalies remain unavailable.
+            guard value.isFinite,(0...1.000001).contains(value) else {continue}
+            result[language.rawValue] = min(1,value)
+         }
         return result
     }
 }

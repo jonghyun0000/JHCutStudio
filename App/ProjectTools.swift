@@ -9,7 +9,7 @@ private struct CanvasPreset: Identifiable, Hashable {
     let width: Int
     let height: Int
     var id: String { "\(width)x\(height)" }
-    var label: String { "\(name) · \(width)×\(height)" }
+    var label: String { UIL10n.format("ui.project.canvas.preset", UIL10n.text(name), width, height) }
 
     static let landscape: [CanvasPreset] = [
         CanvasPreset(name: "4K UHD", width: 3840, height: 2160),
@@ -28,6 +28,7 @@ private struct CanvasPreset: Identifiable, Hashable {
 }
 
 struct ProjectTools: View {
+    @Environment(\.locale) private var uiLocale
     @ObservedObject var model: EditorModel
     @State private var rename = ""
 
@@ -37,6 +38,7 @@ struct ProjectTools: View {
     }
 
     var body: some View {
+        let _ = uiLocale.identifier // Refresh dynamic display strings without recreating editor state.
         ScrollView {
             VStack(alignment: .leading, spacing: JH.Space.l) {
                 section("프로젝트") {
@@ -46,7 +48,15 @@ struct ProjectTools: View {
                         .onAppear { rename = model.project.name }
                         .onChange(of: model.project.name) { _, value in rename = value }
                         .onSubmit { if !rename.isEmpty { model.perform(.rename(rename)) } }
-                    Text(model.recoveryStatus).font(JH.Font.micro).foregroundStyle(.secondary)
+                    Text(UIL10n.text(model.recoveryStatus)).font(JH.Font.micro).foregroundStyle(.secondary)
+                    VStack(alignment: .leading, spacing: 4) {
+                        HStack(spacing: JH.Space.s) {
+                            Button("생성 파일 확인") { model.refreshGeneratedMedia() }
+                            Button("쓰지 않는 파일 정리…") { model.cleanGeneratedMedia() }.disabled(model.busyDocument || (model.generatedMediaReport?.removable.isEmpty ?? true))
+                        }.buttonStyle(.jhTool).font(JH.Font.caption)
+                        if !model.generatedMediaStatus.isEmpty { Text(UIL10n.text(model.generatedMediaStatus)).font(JH.Font.micro).foregroundStyle(.secondary) }
+                        Text("정지 화면·거꾸로·SDR·믹스 파일은 앱이 만든 사본입니다. 문서가 쓰는 파일은 정리하지 않습니다. 백업은 문서만, ‘원본 모으기’는 문서와 모든 미디어를 담습니다.").font(JH.Font.micro).foregroundStyle(.secondary)
+                    }
                     HStack(spacing: JH.Space.s) {
                         Button("복구본 열기…") { model.offerRecovery() }
                         Button("원본 모으기…") { model.collectProject() }.disabled(model.busyDocument)
@@ -58,11 +68,11 @@ struct ProjectTools: View {
                     Picker("목표 음량", selection: $model.targetLUFS) { Text("-14 LUFS").tag(-14.0); Text("-16 LUFS").tag(-16.0); Text("-23 LUFS").tag(-23.0) }
                     Toggle("전체 믹스 음성 강조 · 대사 중심 영상용", isOn: $model.enhanceMixVoice)
                     Button("믹스 완성 버전 만들기") { model.masterMix() }.disabled(model.busyDocument || model.plan == nil)
-                    Text(model.mixStatus).font(JH.Font.micro)
+                    Text(UIL10n.text(model.mixStatus)).font(JH.Font.micro)
                     Text("원본 버전 보존 · 저음 정리/압축/작은 잡음 감쇠 선택 · 샘플 피크 제한. 믹스 완성 후 편집을 바꾸면 원본 버전에서 다시 만드세요.").font(JH.Font.micro).foregroundStyle(.secondary)
                 }
                 section("제작 템플릿") {
-                    ForEach(EditTemplate.Kind.allCases, id: \.self) { kind in Button(kind.rawValue) { model.applyTemplate(kind) } }
+                    ForEach(EditTemplate.Kind.allCases, id: \.self) { kind in Button(UIL10n.text(kind.rawValue)) { model.applyTemplate(kind) } }
                     Text("현재 영상 위에 편집 가능한 제목·전환·마무리를 추가합니다.").font(JH.Font.micro)
                 }
                 section("출력 형식") { formatControls }
@@ -79,14 +89,15 @@ struct ProjectTools: View {
                     Button("출력 대기열에 추가…") { model.exportVideo() }
                     ForEach(model.exportQueue) { item in
                         HStack {
-                            Text(item.url.lastPathComponent + " · " + item.status).font(JH.Font.micro).lineLimit(2)
+                            Text(item.url.lastPathComponent + " · " + UIL10n.text(item.status)).font(JH.Font.micro).lineLimit(2)
                             if item.status != "출력 중" { Button("제거") { model.removeQueuedExport(item.id) } }
                         }
                     }
                     Button("대기열 계속") { model.startNextExport() }.disabled(model.isExporting)
                     Toggle("SRT 자막 파일도 함께 저장 · 번인 자막과 비교", isOn: $model.exportSidecarSRT)
+                    Text("기존 영상·SRT는 덮어쓰지 않습니다. 추가 작업 실패/취소 시 영상은 보존하고 대기열을 멈춥니다.").font(JH.Font.micro).foregroundStyle(.secondary)
                     OutputQualityView(model: model)
-                    DisclosureGroup("최근 출력 기록 \(model.exportJournal.count)개") {
+                    DisclosureGroup(UIL10n.format("ui.project.export.history.count", model.exportJournal.count)) {
                         ForEach(Array(model.exportJournal.reversed().enumerated()), id: \.offset) { _, record in
                             Text(journalLabel(record)).font(JH.Font.micro)
                         }
@@ -100,7 +111,7 @@ struct ProjectTools: View {
                     Toggle("선택 구간 반복", isOn: $model.loopEnabled)
                     ForEach(model.project.sequence.markers ?? []) { marker in
                         HStack {
-                            Button(marker.name + String(format: " · %.2f초", marker.time.seconds)) { model.seek(marker.time.seconds) }
+                            Button(UIL10n.format("ui.project.marker.seconds", marker.name, marker.time.seconds)) { model.seek(marker.time.seconds) }
                             Spacer(); Button("삭제") { model.removeMarker(marker.id) }
                         }
                     }
@@ -111,7 +122,7 @@ struct ProjectTools: View {
                         Toggle("프록시 사용", isOn: $model.proxyEnabled)
                             .onChange(of: model.proxyEnabled) { model.rebuild() }
                             .disabled(model.proxyURLs.isEmpty || model.busyDocument)
-                        Text(model.proxyStatus).font(JH.Font.micro).foregroundStyle(.secondary)
+                        Text(UIL10n.text(model.proxyStatus)).font(JH.Font.micro).foregroundStyle(.secondary)
                         HStack(spacing: JH.Space.s) {
                             Button("프록시 생성") { model.generateProxies() }.disabled(model.busyDocument)
                             Button("캐시 비우기") { model.clearProxies() }.disabled(model.busyDocument)
@@ -155,11 +166,12 @@ struct ProjectTools: View {
                                 Text(asset.name).font(JH.Font.caption).lineLimit(1)
                                 if !FileManager.default.fileExists(atPath: asset.resolvedURL(relativeTo: model.mediaBaseURL).path) {
                                     Text("미디어 누락").font(JH.Font.micro).foregroundStyle(JH.Palette.warning)
+                                    if let hint = model.missingMediaHint(for: asset) { Text(hint).font(JH.Font.micro).foregroundStyle(.secondary) }
                                 }
                             }
                             Spacer()
                             Button("재연결") { model.relink(asset) }.font(JH.Font.micro).buttonStyle(.borderless)
-                                .accessibilityLabel(Text("\(asset.name) 재연결"))
+                                .accessibilityLabel(Text(UIL10n.format("ui.project.asset.relink", asset.name)))
                         }
                     }
                 }
@@ -173,7 +185,7 @@ struct ProjectTools: View {
 
     private func journalLabel(_ record: [String: String]) -> String {
         let name = URL(fileURLWithPath: record["file"] ?? "").lastPathComponent
-        return [name, record["codec"] ?? "", record["status"] ?? "", record["quality"] ?? ""].filter { !$0.isEmpty }.joined(separator: " · ")
+        return [name, record["codec"] ?? "", UIL10n.text(record["status"] ?? ""), record["quality"] ?? ""].filter { !$0.isEmpty }.joined(separator: " · ")
     }
 
     // MARK: Format
@@ -189,7 +201,7 @@ struct ProjectTools: View {
             })) {
             Section("가로") { ForEach(CanvasPreset.landscape) { Text($0.label).tag($0.id) } }
             Section("세로") { ForEach(CanvasPreset.portrait) { Text($0.label).tag($0.id) } }
-            if currentPreset == nil { Text("사용자 지정 · \(sequence.width)×\(sequence.height)").tag("custom") }
+            if currentPreset == nil { Text(UIL10n.format("ui.project.canvas.custom", sequence.width, sequence.height)).tag("custom") }
         }
         .font(JH.Font.label)
         .disabled(model.busyDocument)
@@ -235,7 +247,7 @@ struct ProjectTools: View {
         HStack {
             Text("\(model.exportCodec == .hevc ? "HEVC" : "H.264") \(model.outputBitRate / 1_000_000)Mbps").font(JH.Font.numeric(11))
             Spacer()
-            Text("예상 \(estimatedMegabytes)MB").font(JH.Font.numeric(11)).foregroundStyle(.secondary)
+            Text(UIL10n.format("ui.project.export.estimate", estimatedMegabytes)).font(JH.Font.numeric(11)).foregroundStyle(.secondary)
         }
         Text("실제 용량은 화면 내용에 따라 달라집니다. AAC 192kbps가 더해집니다.")
             .font(JH.Font.micro).foregroundStyle(.tertiary)
@@ -249,7 +261,7 @@ struct ProjectTools: View {
 
     @ViewBuilder private func section<Content: View>(_ title: String, @ViewBuilder content: () -> Content) -> some View {
         VStack(alignment: .leading, spacing: JH.Space.s) {
-            Text(title).font(JH.Font.sectionTitle).accessibilityAddTraits(.isHeader)
+            Text(UIL10n.text(title)).font(JH.Font.sectionTitle).accessibilityAddTraits(.isHeader)
             content()
         }
     }
@@ -257,18 +269,20 @@ struct ProjectTools: View {
 
 /// Result of the automatic check that runs after every export.
 struct OutputQualityView: View {
+    @Environment(\.locale) private var uiLocale
     @ObservedObject var model: EditorModel
     var body: some View {
+        let _ = uiLocale.identifier // Refresh dynamic display strings without recreating editor state.
         VStack(alignment: .leading, spacing: 4) {
             if !model.exportQualityStatus.isEmpty {
-                Text(model.exportQualityStatus).font(JH.Font.micro)
+                Text(UIL10n.text(model.exportQualityStatus)).font(JH.Font.micro)
                     .foregroundStyle(model.lastQualityReport.map { $0.passed ? Color.secondary : JH.Palette.warning } ?? Color.secondary)
             }
             if let report = model.lastQualityReport {
                 ForEach(Array(report.issues.prefix(6).enumerated()), id: \.offset) { _, issue in
-                    Text((issue.severity == .error ? "오류 · " : issue.severity == .warning ? "경고 · " : "") + issue.message).font(JH.Font.micro).lineLimit(2)
+                    Text(UIL10n.text(issue.severity == .error ? "오류 · " : issue.severity == .warning ? "경고 · " : "") + issue.message).font(JH.Font.micro).lineLimit(2)
                 }
-                if report.issues.count > 6 { Text("외 \(report.issues.count - 6)개 · 보고서에서 확인").font(JH.Font.micro).foregroundStyle(.secondary) }
+                if report.issues.count > 6 { Text(UIL10n.format("ui.project.issue.more", report.issues.count - 6)).font(JH.Font.micro).foregroundStyle(.secondary) }
                 HStack {
                     if let url = model.lastQualityReportURL { Button("검사 보고서 열기") { NSWorkspace.shared.open(url) } }
                     Button("마지막 출력 다시 검사") { model.recheckLastExport() }.disabled(model.isExporting)
@@ -280,8 +294,10 @@ struct OutputQualityView: View {
 
 /// Installation check (model, translation packs, bundle, disk) and user backups of the document.
 struct InstallAndBackupView: View {
+    @Environment(\.locale) private var uiLocale
     @ObservedObject var model: EditorModel
     var body: some View {
+        let _ = uiLocale.identifier // Refresh dynamic display strings without recreating editor state.
         VStack(alignment: .leading, spacing: 6) {
             HStack {
                 Button("설치 상태 점검") { model.runDiagnostics() }
@@ -298,23 +314,39 @@ struct InstallAndBackupView: View {
             Button("프로젝트 백업 만들기") { model.createProjectBackup() }.disabled(model.documentURL == nil || model.busyDocument)
             Menu("백업에서 복원 · 새 문서로 열기") {
                 ForEach(model.backupEntries.prefix(12)) { entry in
-                    Button(entry.manifest.documentName + " · " + entry.manifest.createdAt.formatted(date: .abbreviated, time: .shortened)) { model.restoreBackup(entry) }
+                    Button(backupPickerLabel(entry)) { model.restoreBackup(entry) }
                 }
                 if model.backupEntries.isEmpty { Text("백업 없음") }
             }.disabled(model.busyDocument)
-            Text("백업은 문서만 복사하고 원본 영상은 위치만 기록합니다. 복원은 기존 파일을 덮어쓰지 않습니다.").font(JH.Font.micro).foregroundStyle(.secondary)
+            Text(UIL10n.text(model.backupStatus) + UIL10n.text(" 복원은 새 문서로 엽니다.")).font(JH.Font.micro).foregroundStyle(.secondary)
         }
         .onAppear { model.refreshBackups() }
+    }
+    private func backupPickerLabel(_ entry: ProjectBackup.Entry) -> String {
+        let formatter = DateFormatter()
+        formatter.locale = Locale(identifier: "ko_KR")
+        formatter.dateFormat = "yyyy-MM-dd HH:mm:ss.SSS"
+        let scope: String
+        switch entry.manifest.unsavedChangesPresent {
+        case .some(true): scope = "미저장 변경 제외"
+        case .some(false): scope = "미저장 변경 없음"
+        case .none: scope = "미저장 변경 여부 기록 없음"
+        }
+        return UIL10n.format("ui.project.backup.picker", entry.manifest.documentName,
+                            formatter.string(from: entry.manifest.preciseCreatedAt),
+                            String(entry.folder.lastPathComponent.suffix(8)), UIL10n.text(scope))
     }
 }
 
 struct DiagnosticRow: View {
+    @Environment(\.locale) private var uiLocale
     let item: DiagnosticItem
     var body: some View {
+        let _ = uiLocale.identifier // Refresh dynamic display strings without recreating editor state.
         VStack(alignment: .leading, spacing: 2) {
-            Text(symbol + " " + item.title).font(JH.Font.micro.weight(.semibold))
+            Text(symbol + " " + UIL10n.text(item.title)).font(JH.Font.micro.weight(.semibold))
                 .foregroundStyle(item.level == .error ? JH.Palette.warning : item.level == .warning ? JH.Palette.warning : Color.primary)
-            Text(item.advice).font(JH.Font.micro).foregroundStyle(.secondary).lineLimit(4)
+            Text(UIL10n.text(item.advice)).font(JH.Font.micro).foregroundStyle(.secondary).lineLimit(4)
         }
     }
     private var symbol: String { switch item.level { case .ok: return "✓"; case .info: return "ⓘ"; case .warning: return "!"; case .error: return "✕" } }

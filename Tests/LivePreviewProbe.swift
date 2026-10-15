@@ -47,7 +47,8 @@ import JHCutCore
 
     @MainActor static func main() async {
         _ = NSApplication.shared
-        let output = URL(fileURLWithPath: CommandLine.arguments.dropFirst().first ?? "Artifacts/LivePreview", isDirectory: true)
+        let output: URL
+        do { output = try ProbeWorkspace.prepare(defaultPath: "Artifacts/LivePreview") } catch { print(error); exit(2) }
         do {
             try FileManager.default.createDirectory(at: output, withIntermediateDirectories: true)
             let media = output.appendingPathComponent("source.mp4")
@@ -60,7 +61,7 @@ import JHCutCore
             project.assets = [asset]; project.sequence.tracks[0].clips = [clip]
 
             // The probe owns a throwaway recovery slot; the user's own slot is never touched.
-            let model = EditorModel(recoveryStore: RecoveryStore(directory: output.appendingPathComponent("recovery", isDirectory: true)))
+            let model = EditorModel(recoveryStore: RecoveryStore(directory: output.appendingPathComponent("recovery", isDirectory: true)), exportHistoryURL: output.appendingPathComponent("journal.json"), proxyCache: ProxyCache(directory: output.appendingPathComponent("ProxyCache")))
             model.history = EditorHistory(project: project)
             model.selectedClipID = clip.id
             model.rebuild()

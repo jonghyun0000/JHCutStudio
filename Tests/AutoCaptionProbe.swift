@@ -4,13 +4,20 @@ import AppKit
 import AVFoundation
 import CoreGraphics
 import ImageIO
-import JHCutCore
+@testable import JHCutCore
 
 @main struct AutoCaptionProbe {
  @MainActor static func main() async throws {
   _ = NSApplication.shared
-  let root = URL(fileURLWithPath: CommandLine.arguments.dropFirst().first ?? "Artifacts/Logo-Captions", isDirectory:true)
+  let root = try ProbeWorkspace.prepare(defaultPath: "Artifacts/Logo-Captions")
   let source = root.appendingPathComponent("Speech/한국어 음성.aiff")
+  try FileManager.default.createDirectory(at: source.deletingLastPathComponent(), withIntermediateDirectories: true)
+  let speech = Process()
+  speech.executableURL = URL(fileURLWithPath: "/usr/bin/say")
+  speech.arguments = ["-v", "Yuna", "-r", "140", "-o", source.path,
+      "안녕하세요. 오늘은 공원에서 영상을 촬영하고 있습니다. 날씨가 좋아서 친구와 함께 산책을 합니다. 잠시 후에는 카페에서 따뜻한 차를 마실 예정입니다. 저녁에는 촬영한 영상을 정리하겠습니다."]
+  try speech.run(); speech.waitUntilExit()
+  guard speech.terminationStatus == 0 else { throw MediaEngineError.failed("한국어 검사 음성 생성에 실패했습니다.") }
   let asset = try await MediaImporter.inspect(url:source)
   var project = Project(name:"한국어 자동 자막 실제 검증")
   project.sequence.width = 640; project.sequence.height = 360; project.assets = [asset]
@@ -80,6 +87,25 @@ import JHCutCore
    check("Burned caption is not clipped at top/bottom",edgePixels == 0)
   }
   try ProjectStore.save(captioned,to:root.appendingPathComponent("자동자막-검증.jhcut"))
+  // A current-version completed window with three real repeated utterances must propagate
+  // through the editor as three captions, three review badges and truthful completion text.
+  model.history = EditorHistory(project: project)
+  model.selectedClipIDs = [first.id]; model.selectedClipID = first.id
+  model.skipNonSpeech = false; model.translateAfterTranscription = false
+  model.useSpeechCheckpoints = true; model.speechWindowSeconds = 30; model.speechOptions.language = "ko"
+  model.checkpointStore = TranscriptionCheckpointStore(root: root.appendingPathComponent("repeat-checkpoints"))
+  let repeatCues = [3.0, 4.0, 5.0].map { CaptionCue(start: MediaTime(seconds: $0), duration: MediaTime(seconds: 0.8), text: "같은 문장을 반복합니다") }
+  let repeatKey = TranscriptionCheckpointKey(projectID: project.id, clipID: first.id, mediaSHA256: try await FileIdentity.sha256(source), sourceStart: first.sourceStart, duration: first.sourceDuration, windowSeconds: 30, options: model.speechOptions, modelSHA256: model.speechModelSpec.sha256)
+  var repeatWindow = TranscriptionWindowResult(index: 0, sourceStart: first.sourceStart, duration: first.sourceDuration, cues: repeatCues, language: "ko", channel: 0, elapsedSeconds: 1)
+  repeatWindow.repetitionSuspects = repeatCues.map { $0.start.seconds }
+  repeatWindow.audioSelection = try await AudioChannelSelection.resolve(url:source,sourceStart:first.sourceStart,duration:first.sourceDuration,preferredChannel:model.speechOptions.channel)
+  repeatWindow.inputSignature = try RecognitionInputSignature.make(regions:nil,evidence:nil,selection:nil)
+  try model.checkpointStore.save(repeatWindow, for: repeatKey)
+  model.transcribeSelection(); await model.productivityTask?.value
+  let repeatedTitles = model.project.sequence.tracks.dropFirst(project.sequence.tracks.count).flatMap(\.clips)
+  check("Editor preserves all three repeated utterances", model.error == nil && repeatedTitles.count == 3 && repeatedTitles.allSatisfy { $0.title?.text == "같은 문장을 반복합니다" }, model.error ?? model.productivityStatus)
+  check("Editor flags all preserved repeated captions for review", model.repetitionCaptionIDs == Set(repeatedTitles.map(\.id)) && model.repetitionCaptionIDs.count == 3)
+  check("Completion states preservation rather than deletion", model.productivityStatus.contains("반복 인식 의심 3개 보존") && !model.productivityStatus.contains("개 제거"), model.productivityStatus)
   try JSONSerialization.data(withJSONObject:checks,options:[.prettyPrinted,.sortedKeys]).write(to:root.appendingPathComponent("caption-checks.json"))
   if checks.contains(where:{($0["passed"] as? Bool) != true}) {exit(1)}
  }

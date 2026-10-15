@@ -6,7 +6,7 @@ import JHCutCore
 @main struct GlossaryProbe {
  @MainActor static func main() async throws {
   setbuf(stdout, nil); _ = NSApplication.shared
-  let root = URL(fileURLWithPath: CommandLine.arguments.dropFirst().first ?? "Artifacts/Upgrade-0.7/Glossary", isDirectory: true).standardizedFileURL
+  let root = try ProbeWorkspace.prepare(defaultPath: "Artifacts/Upgrade-0.7/Glossary")
   try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
   var rows: [[String: Any]] = [], samples: [[String: Any]] = []
   func check(_ name: String, _ passed: Bool, _ detail: String = "") { rows.append(["name": name, "passed": passed, "detail": detail]); print("\(passed ? "PASS" : "FAIL") \(name) \(detail)") }
@@ -122,7 +122,9 @@ import JHCutCore
   model.showOriginalCaptionTracks()
   let realProvider = model.translationProvider
   model.translationProvider = { texts, s, t in
-   try await realProvider(texts.map { $0.replacingOccurrences(of: "ZQX1", with: "") }, s, t)
+   let modified = texts.map { $0.replacingOccurrences(of: "ZQX1", with: "") }
+   if let realProvider { return try await realProvider(modified, s, t) }
+   return try await CaptionTranslation.translate(modified, from: s, to: t)
   }
   let dropped = try await translate(.natural)
   let failedClips = dropped.filter { $0.captionMetadata?.glossaryFailed != nil }

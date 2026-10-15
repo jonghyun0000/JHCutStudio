@@ -30,8 +30,17 @@ mkdir -p "$bundle/Contents/MacOS" "$bundle/Contents/Frameworks" "$bundle/Content
 cp "$build_dir/JHCutStudio" "$bundle/Contents/MacOS/JHCutStudio"
 cp "$build_dir/libJHCutCore.dylib" "$bundle/Contents/Frameworks/"
 cp Resources/Info.plist "$bundle/Contents/Info.plist"
-bash Scripts/build-icon.sh
-cp Resources/JHCutStudio.icns "$bundle/Contents/Resources/"
+# Bundle-root lproj directories are required for SwiftUI LocalizedStringKey lookup.
+for language in ko en; do
+  mkdir -p "$bundle/Contents/Resources/$language.lproj"
+  rsync -a --delete "Resources/Localization/$language.lproj/" "$bundle/Contents/Resources/$language.lproj/"
+done
+mkdir -p "$bundle/Contents/Resources/Legal"
+cp LICENSE "$bundle/Contents/Resources/Legal/LICENSE.txt"
+cp THIRD_PARTY_NOTICES.md "$bundle/Contents/Resources/Legal/THIRD_PARTY_NOTICES.md"
+cp Resources/Brand/README.md "$bundle/Contents/Resources/Legal/BRAND.md"
+JHCUT_BUILD_DIR="$build_dir" JHCUT_ICON_OUTPUT="$build_dir/JHCutStudio.icns" bash Scripts/build-icon.sh
+cp "$build_dir/JHCutStudio.icns" "$bundle/Contents/Resources/"
 if [[ -f Resources/Library/manifest.json ]]; then
   mkdir -p "$bundle/Contents/Resources/Library"
   rsync -a --delete Resources/Library/ "$bundle/Contents/Resources/Library/"
@@ -41,6 +50,12 @@ if [[ -f Resources/Whisper/whisper-cli ]]; then
   rsync -a --delete Resources/Whisper/ "$bundle/Contents/Resources/Whisper/"
   codesign --force --sign - "$bundle/Contents/Resources/Whisper/whisper-cli"
 fi
+# Keep local standalone binaries and their dSYMs for debugging. Remove only
+# debug symbol entries from the copied distribution binaries before signing;
+# otherwise their symbol tables retain private compiler/workspace paths.
+for distribution_binary in "$bundle/Contents/MacOS/JHCutStudio" "$bundle/Contents/Frameworks/libJHCutCore.dylib"; do
+  /usr/bin/strip -S "$distribution_binary"
+done
 codesign --force --sign - "$bundle/Contents/Frameworks/libJHCutCore.dylib"
 codesign --force --sign - "$bundle"
 touch "$bundle"

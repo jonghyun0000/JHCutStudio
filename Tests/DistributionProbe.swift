@@ -7,13 +7,27 @@ import CryptoKit
 @main struct DistributionProbe {
  @MainActor static func main() async throws {
   setbuf(stdout, nil); _ = NSApplication.shared
-  let root = URL(fileURLWithPath: CommandLine.arguments.dropFirst().first ?? "Artifacts/Upgrade-0.7/Distribution", isDirectory: true).standardizedFileURL
-  try? FileManager.default.removeItem(at: root)
+  let root = try ProbeWorkspace.prepare(defaultPath: "Artifacts/Upgrade-0.7/Distribution")
   try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
   var rows: [[String: Any]] = []
   func check(_ name: String, _ passed: Bool, _ detail: String = "") { rows.append(["name": name, "passed": passed, "detail": detail]); print("\(passed ? "PASS" : "FAIL") \(name) \(detail)") }
   defer { try? JSONSerialization.data(withJSONObject: rows, options: [.prettyPrinted, .sortedKeys]).write(to: root.appendingPathComponent("checks.json")) }
   func sha(_ url: URL) throws -> String { SHA256.hash(data: try Data(contentsOf: url)).map { String(format: "%02x", $0) }.joined() }
+
+  // Verify the actual built bundle carries the source's complete notices, not just a menu label.
+  let build = URL(fileURLWithPath: ProcessInfo.processInfo.environment["JHCUT_BUILD_DIR"] ?? "Build", isDirectory: true)
+  let resources = build.appendingPathComponent("JH CUT Studio.app/Contents/Resources", isDirectory: true)
+  for (source, bundled) in [("LICENSE", "Legal/LICENSE.txt"), ("THIRD_PARTY_NOTICES.md", "Legal/THIRD_PARTY_NOTICES.md"),
+                            ("Resources/Brand/README.md", "Legal/BRAND.md"), ("Resources/Whisper/THIRD-PARTY-NOTICES.txt", "Whisper/THIRD-PARTY-NOTICES.txt"),
+                            ("Resources/Library/CREDITS.md", "Library/CREDITS.md")] {
+   let expected = try Data(contentsOf: URL(fileURLWithPath: source))
+   let actual = try? Data(contentsOf: resources.appendingPathComponent(bundled))
+   check("Bundle preserves complete notice bytes: \(bundled)", !expected.isEmpty && actual == expected)
+  }
+  let runtimeNotice = try String(contentsOf: resources.appendingPathComponent("Whisper/THIRD-PARTY-NOTICES.txt"), encoding: .utf8)
+  check("Runtime notice retains embedded component copyrights", ["The ggml authors", "David Reid", "Sean Barrett", "Jeffrey Quesnelle and Bowen Peng"].allSatisfy(runtimeNotice.contains))
+  let credits = try String(contentsOf: resources.appendingPathComponent("Library/CREDITS.md"), encoding: .utf8)
+  check("Media credits retain requested creator links", credits.contains("cynicmusic.com / pixelsphere.org") && credits.contains("musiccompositionhacks.blogspot.com/2020/07/how-to-improvise-music-in-real-time.html"))
 
   // ---- Diagnostics (fake environments; nothing is installed or downloaded) ----
   let real = WhisperConfiguration()

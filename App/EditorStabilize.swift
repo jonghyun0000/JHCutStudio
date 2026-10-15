@@ -21,25 +21,31 @@ extension EditorModel {
         guard clip.sourceDuration.seconds <= StabilizationAnalyzer.maximumSeconds else {
             error = "손떨림 분석은 클립당 \(Int(StabilizationAnalyzer.maximumSeconds / 60))분까지 가능합니다. 클립을 나눈 뒤 각각 분석하세요."; return
         }
-        let snapshot = project, url = asset.resolvedURL(relativeTo: mediaBaseURL), previous = clip.stabilization
+        let snapshot = project, baseSnapshot = mediaBaseURL, documentSnapshot = documentURL, url = asset.resolvedURL(relativeTo: mediaBaseURL), previous = clip.stabilization
         pausePlayback(); stopAudition(); error = nil
         productivityBusy = true; productivityStatus = "손떨림 분석 중 · 0%"
         let begun = Date()
+        let ticket = beginAsyncJob(.productivity)
         productivityTask = Task {
-            defer { productivityBusy = false; productivityTask = nil }
+            defer { finishAsyncJob(ticket) }
             do {
+                try validateAsyncJob(ticket)
+                let identity = try await EditorSourceIdentity.capture(url)
                 var data = try await StabilizationAnalyzer.analyze(url: url, sourceStart: clip.sourceStart, duration: clip.sourceDuration) { [weak self] fraction in
-                    Task { @MainActor in self?.productivityStatus = "손떨림 분석 중 · \(Int(fraction * 100))%" }
+                    Task { @MainActor in self?.acceptProductivityProgress("손떨림 분석 중 · \(Int(fraction * 100))%", ticket: ticket) }
                 }
                 try Task.checkCancellation()
-                guard project == snapshot else { throw ProjectError("분석 중 프로젝트가 변경되었습니다. 오래된 분석을 잘못 적용하지 않도록 중단했습니다. 다시 실행하세요.") }
-                if let previous { data.strength = previous.strength; data.smoothing = previous.smoothing }
+                guard project == snapshot, mediaBaseURL == baseSnapshot, documentURL == documentSnapshot else { throw ProjectError("분석 중 프로젝트 또는 문서가 변경되었습니다. 오래된 분석을 잘못 적용하지 않도록 중단했습니다. 다시 실행하세요.") }
+                try await checkpointAsyncJob(ticket, "stabilize.beforeApply")
+                try await identity.validate(); try validateAsyncJob(ticket)
+                if let previous { data.strength = min(previous.strength, (data.confidence ?? 1) < 0.65 ? 0.35 : 1); data.smoothing = previous.smoothing; data.enabled = data.enabled && previous.enabled }
                 var value = clip; value.stabilization = data
                 if perform(.updateClip(trackID: track.id, clip: value)) {
                     message = "손떨림 분석 완료 · " + Self.describeStabilization(data, elapsed: Date().timeIntervalSince(begun)) + " · ⌘Z로 되돌릴 수 있습니다."
                     productivityStatus = message
                 }
             } catch {
+                guard ownsAsyncJob(ticket) else { return }
                 if Task.isCancelled { message = "손떨림 분석 취소됨 · 클립은 바뀌지 않았습니다." }
                 else { self.error = error.localizedDescription; message = "손떨림 분석 실패 · 클립은 바뀌지 않았습니다." }
                 productivityStatus = message
@@ -61,6 +67,7 @@ extension EditorModel {
             if plan.limitedSamples > 0 { parts.append(String(format: "보정 제한 %.0f%%", Double(plan.limitedSamples) / Double(data.count) * 100)) }
         } else if !data.enabled { parts.append("꺼짐") }
         if data.rejectedSteps > 0 { parts.append("건너뛴 프레임 \(data.rejectedSteps)개") }
+        if let confidence = data.confidence { parts.append(String(format: "신뢰도 %.0f%%", confidence * 100)); if confidence < 0.5 { parts.append("신뢰도 부족 · 원본 유지") } }
         if let elapsed { parts.append(String(format: "분석 %.1f초", elapsed)) }
         return parts.joined(separator: " · ")
     }

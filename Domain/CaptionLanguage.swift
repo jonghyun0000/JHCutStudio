@@ -15,15 +15,19 @@ public struct CaptionMetadata: Codable, Equatable, Sendable {
     /// Dominant language Whisper reported for the whole source clip; `language` is this sentence's.
     public var clipLanguage: String?
     /// 0…1 evidence for `language`. nil when set by hand or imported without detection.
+    public var languageOrigin: SourceLanguageObservation.Method?
+    public var languageEvidence: [SourceLanguageObservation]?
     public var languageConfidence: Double?
     /// The user chose this sentence's language; detection and re-recognition must not replace it.
     public var languageManual: Bool?
     /// Detection fell back to the clip language because the sentence was too short or ambiguous.
     public var languageNeedsReview: Bool?
-    /// "A", "B", … from channel separation, or nil. Never assigned by guesswork.
+    /// Recording-scoped speaker identity; display names live in Sequence.speakers.
     public var speaker: String?
     /// "separated" when assigned, "uncertain" when analysed but not clearly separated.
     public var speakerStatus: String?
+    /// Explicit assignment or clearing; automated analysis/re-recognition must preserve it.
+    public var speakerManual: Bool?
     /// Translation register requested for this clip ("natural", "polite", "formal", "casual").
     public var translationStyle: String?
     /// Whether the register conversion actually changed/confirmed the sentence ending.
@@ -31,6 +35,9 @@ public struct CaptionMetadata: Codable, Equatable, Sendable {
     /// Glossary terms applied to this translation, and terms whose protection marker was lost.
     public var glossaryApplied: [String]?
     public var glossaryFailed: [String]?
+    /// A user review applies only to this exact text/timing/language/speaker state.
+    public var reviewDigest: String?
+    public var translationRevision: TranslationRevision?
     public init(language: String, originalLanguage: String, originalText: String, translatedFrom: UUID? = nil, generatedText: String) {
         self.language = language; self.originalLanguage = originalLanguage; self.originalText = originalText
         self.translatedFrom = translatedFrom; self.generatedText = generatedText
@@ -48,12 +55,16 @@ public enum CaptionTranslationEditing {
         clip.connection?.generatedText = rendered
         var metadata = CaptionMetadata(language: targetLanguage, originalLanguage: sourceLanguage, originalText: title.text, translatedFrom: original.id, generatedText: rendered)
         // A translation speaks for the same person as its original.
-        metadata.speaker = original.captionMetadata?.speaker; metadata.speakerStatus = original.captionMetadata?.speakerStatus
+        metadata.speaker = original.captionMetadata?.speaker; metadata.speakerStatus = original.captionMetadata?.speakerStatus; metadata.speakerManual = original.captionMetadata?.speakerManual
         clip.captionMetadata = metadata
+        clip.captionRole = .translation; clip.captionGroupID = original.captionGroupID ?? original.connection?.parentID ?? original.lineageID ?? original.id
+        clip.captionHidden = nil
         return clip
     }
     public static func isTranslation(of original: Clip, _ candidate: Clip, target: String) -> Bool {
         guard let metadata = candidate.captionMetadata, metadata.translatedFrom != nil, metadata.language == target else { return false }
+        guard CaptionQuery.related(candidate, to: original) else { return false }
+        if metadata.translationRevision != nil { return true }
         if let source = original.connection, let other = candidate.connection {
             return source.parentID == other.parentID && source.sourceStart == other.sourceStart && source.sourceDuration == other.sourceDuration
         }

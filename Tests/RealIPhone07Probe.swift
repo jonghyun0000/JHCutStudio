@@ -12,10 +12,13 @@ import JHCutCore
 
  static func main() async throws {
   setbuf(stdout, nil)
-  let root = URL(fileURLWithPath: CommandLine.arguments.dropFirst().first ?? "Artifacts/Upgrade-0.7/RealIPhone", isDirectory: true)
+  let root = try ProbeWorkspace.prepare(defaultPath: "Artifacts/Upgrade-0.7/RealIPhone")
   let copies = URL(fileURLWithPath: "Artifacts/Upgrade-0.7/RealCopies", isDirectory: true)
-  try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
   let names = CommandLine.arguments.count > 2 ? Array(CommandLine.arguments.dropFirst(2)) : ["IMG_0140.mov", "IMG_0047.mov", "IMG_9211.mov"]
+  if ProcessInfo.processInfo.environment["JHCUT_REAL_IPHONE_MODE"] != "full" {
+   try await boundaryProbe(root: root, copies: copies, names: names)
+   return
+  }
   var records: [[String: Any]] = []
   var options = SpeechOptions(); options.language = "auto"
   let config = WhisperConfiguration()
@@ -57,9 +60,9 @@ import JHCutCore
    let silentSkip = VoiceActivity.silentCaptions(skip.cues.map { $0.start.seconds...($0.start.seconds + $0.duration.seconds) }, report: vad)
    // Consistency only (not accuracy): how much of the full run's text over speech the skipping run kept.
    let speechText = full.cues.filter { cue in vad.speechRegions.contains { $0.lowerBound <= cue.start.seconds && cue.start.seconds <= $0.upperBound } }.map(\.text).joined()
-   let consistency = TranscriptEvaluation.editCounts(reference: Array(TranscriptEvaluation.normalized(speechText, language: full.language)), hypothesis: Array(TranscriptEvaluation.normalized(skip.cues.map(\.text).joined(), language: full.language)))
+   let consistency = try TranscriptEvaluation.editCounts(reference: Array(TranscriptEvaluation.normalized(speechText, language: full.language)), hypothesis: Array(TranscriptEvaluation.normalized(skip.cues.map(\.text).joined(), language: full.language)))
    let refLen = max(1, TranscriptEvaluation.normalized(speechText, language: full.language).count)
-   let evaluation = TranscriptEvaluation.evaluate(captions: skip.cues.map { EvaluatedCaption(text: $0.text, start: $0.start.seconds, end: $0.start.seconds + $0.duration.seconds) },
+   let evaluation = try TranscriptEvaluation.evaluate(captions: skip.cues.map { EvaluatedCaption(text: $0.text, start: $0.start.seconds, end: $0.start.seconds + $0.duration.seconds) },
                                                   reference: try TranscriptReference.locate(besideMedia: url).map(TranscriptReference.load), language: full.language, sourceRange: 0...asset.duration.seconds, mediaDuration: asset.duration.seconds)
    let prefix = root.appendingPathComponent(URL(fileURLWithPath: name).deletingPathExtension().lastPathComponent)
    try SRTCodec.serialize(full.cues).write(to: prefix.appendingPathExtension("full.srt"), atomically: true, encoding: .utf8)
@@ -81,10 +84,82 @@ import JHCutCore
     "peakMemoryMB": ["probe": selfPeakMB(), "whisperChildMax": childPeakMB()]]
    record["cpuTotalSkipIncludingVAD"] = skipCPU + vadCPU
    records.append(record)
+   guard before == after else { throw NSError(domain: "Real07", code: 1) }
+   print("PASS full-length copy unchanged \(name)")
    print("  marker/lyric cues: full \(full.cues.filter { isMarker($0.text) }.count) → skip \(skip.cues.filter { isMarker($0.text) }.count) · cues over non-speech: full \(silentFull.count) → skip \(silentSkip.count) · evaluation: \(evaluation.reason ?? evaluation.status.rawValue)")
    cpu0 = 0
    try JSONSerialization.data(withJSONObject: records, options: [.prettyPrinted, .sortedKeys]).write(to: root.appendingPathComponent("report.json"))
   }
   print("REAL07_DONE videos=\(records.count)")
  }
+ /// Bounded actual-media checks at absolute 300/600s. A 30s window begins 30s before
+ /// the boundary; pure fixture tests separately exercise full 300s windows.
+ static func boundaryProbe(root: URL, copies: URL, names: [String]) async throws {
+  var rows: [[String: Any]] = [], checks = 0, failures = 0
+  func check(_ name: String, _ ok: Bool) {
+   checks += 1; if !ok { failures += 1 }; print("\(ok ? "PASS" : "FAIL") \(name)")
+  }
+  var options = SpeechOptions(); options.language = "auto"
+  let config = WhisperConfiguration()
+  for name in names {
+   let url = copies.appendingPathComponent(name), before = try await FileIdentity.sha256(copies.appendingPathComponent(name))
+   let asset = try await MediaImporter.inspect(url: url)
+   for boundary in [300.0, 600.0] {
+    let start = MediaTime(seconds: boundary - 30), length = MediaTime(seconds: 45)
+    guard start + length <= asset.duration else { throw NSError(domain: "Real07.shortMedia", code: 1) }
+    let folder = root.appendingPathComponent("\(url.deletingPathExtension().lastPathComponent)-\(Int(boundary))")
+    try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+    let label = "\(name) boundary \(Int(boundary))s"
+    print("MEASURE \(label) source \(start.seconds)…\((start + length).seconds), actual Whisper base; no human transcript")
+    let key = TranscriptionCheckpointKey(projectID: UUID(), clipID: UUID(), mediaSHA256: before, sourceStart: start, duration: length, windowSeconds: 30, options: options, modelSHA256: config.modelSpec.sha256)
+    let store = TranscriptionCheckpointStore(root: folder.appendingPathComponent("Checkpoints")), session = TranscriptionCheckpointSession(store: store, key: key)
+    let reference = try await LocalTranscription.transcribeLong(url: url, sourceStart: start, duration: length, configuration: config, options: options, windowSeconds: 30)
+    let task = Task.detached {
+     try await LocalTranscription.transcribeLong(url: url, sourceStart: start, duration: length, configuration: config, options: options, windowSeconds: 30, checkpoint: session, detail: { d in
+      if d.windowIndex == 1 { withUnsafeCurrentTask { $0?.cancel() } }
+     })
+    }
+    var cancelled = false
+    do { _ = try await task.value } catch is CancellationError { cancelled = true }
+    check(label + " cancellation retains first completed window", cancelled && store.completedWindows(for: key).keys.sorted() == [0])
+    let resumed = try await LocalTranscription.transcribeLong(url: url, sourceStart: start, duration: length, configuration: config, options: options, windowSeconds: 30, checkpoint: session)
+    let received = store.completedWindows(for: key).values.sorted { $0.index < $1.index }.flatMap(\.cues)
+    let expected = received.enumerated().sorted { $0.element.start == $1.element.start ? $0.offset < $1.offset : $0.element.start < $1.element.start }.map(\.element)
+    check(label + " all received cue IDs preserved once", resumed.cues.map(\.id) == expected.map(\.id) && resumed.cues.count == received.count)
+    check(label + " fresh/resume normalized SRT equal", try SRTCodec.serialize(reference.cues) == SRTCodec.serialize(resumed.cues))
+    check(label + " first half-second cues preserved", received.filter { $0.start >= MediaTime(seconds: boundary) && $0.start < MediaTime(seconds: boundary + 0.5) }.allSatisfy { resumed.cues.contains($0) })
+    check(label + " absolute source bounds", resumed.cues.allSatisfy { $0.start >= start && $0.start + $0.duration <= start + length })
+    let reload = try await LocalTranscription.transcribeLong(url: url, sourceStart: start, duration: length, configuration: config, options: options, windowSeconds: 30, checkpoint: session)
+    check(label + " completed reload does no recognition", try reload.computedWindows == 0 && reload.reusedWindows == 2 && SRTCodec.serialize(reload.cues) == SRTCodec.serialize(reference.cues))
+    let vad = try await VoiceActivity.analyze(url: url, sourceStart: start, duration: length)
+    var skip: LocalTranscript?, skipError: String?
+    let skipKey = TranscriptionCheckpointKey(projectID: key.projectID, clipID: key.clipID, mediaSHA256: before, sourceStart: start, duration: length, windowSeconds: 30, options: options, modelSHA256: config.modelSpec.sha256, skipsSilence: true)
+    do {
+     skip = try await LocalTranscription.transcribeLong(url: url, sourceStart: start, duration: length, configuration: config, options: options, windowSeconds: 30, checkpoint: TranscriptionCheckpointSession(store: store, key: skipKey), speechRegions: vad.speechRegions, speechEvidence: vad.confidentSpeech)
+     let skipReceived = store.completedWindows(for: skipKey).values.flatMap(\.cues)
+     check(label + " VAD received cues all preserved", skip!.cues.count == skipReceived.count && skipReceived.allSatisfy { skip!.cues.contains($0) })
+     check(label + " VAD restored original bounds", skip!.cues.allSatisfy { $0.start >= start && $0.start + $0.duration <= start + length })
+    } catch {
+     skipError = "\(error)"
+     check(label + " no-speech VAD refusal recorded", vad.speechRegions.isEmpty && skipError!.contains("음성 후보"))
+    }
+    try SRTCodec.serialize(reference.cues).write(to: folder.appendingPathComponent("fresh.srt"), atomically: true, encoding: .utf8)
+    try SRTCodec.serialize(resumed.cues).write(to: folder.appendingPathComponent("resumed.srt"), atomically: true, encoding: .utf8)
+    if let skip { try SRTCodec.serialize(skip.cues).write(to: folder.appendingPathComponent("vad.srt"), atomically: true, encoding: .utf8) }
+    let encoder = JSONEncoder(); encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
+    try encoder.encode(vad).write(to: folder.appendingPathComponent("vad.json"))
+    let row: [String: Any] = ["source": name, "sourceStart": start.seconds, "duration": length.seconds, "absoluteBoundary": boundary, "windowSeconds": 30,
+      "pipeline": LocalTranscription.pipelineVersion, "receivedCues": received.count, "mergedCues": resumed.cues.count,
+      "receivedLeadingHalfSecondCues": received.filter { $0.start.seconds >= boundary && $0.start.seconds < boundary + 0.5 }.count,
+      "speechSkippingCues": skip?.cues.count ?? 0, "speechSkippingError": skipError ?? "", "repetitionReviewCues": resumed.repetitionSuspects?.count ?? 0,
+      "evaluation": "unscored", "reason": "No human transcript: recognizer omission/word accuracy cannot be scored. Received-cue preservation and deterministic resume are checked separately."]
+    rows.append(row)
+    try JSONSerialization.data(withJSONObject: rows, options: [.prettyPrinted, .sortedKeys]).write(to: root.appendingPathComponent("report.json"))
+   }
+   check(name + " read-only copy hash unchanged", before == (try await FileIdentity.sha256(url)))
+  }
+  print("REAL_IPHONE_RESULT checks=\(checks) failures=\(failures)")
+  if failures > 0 { exit(1) }
+ }
+
 }

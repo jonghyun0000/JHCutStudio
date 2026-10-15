@@ -13,7 +13,7 @@ import Vision
  }
  static func main() async throws {
   setbuf(stdout, nil)
-  let root = URL(fileURLWithPath: CommandLine.arguments.dropFirst().first ?? "Artifacts/Upgrade-0.7/Stabilization", isDirectory: true).standardizedFileURL
+  let root = try ProbeWorkspace.prepare(defaultPath: "Artifacts/Upgrade-0.7/Stabilization")
   try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
   var rows: [[String: Any]] = [], metrics: [String: Any] = [:]
   func check(_ name: String, _ passed: Bool, _ detail: String = "") { rows.append(["name": name, "passed": passed, "detail": detail]); print("\(passed ? "PASS" : "FAIL") \(name) \(detail)") }

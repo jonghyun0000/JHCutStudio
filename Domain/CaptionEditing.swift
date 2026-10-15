@@ -69,6 +69,7 @@ public enum CaptionEditing {
             var title = style; title.text = text
             var clip = Clip(name: "자동 자막", start: source.start + rate.timelineDuration(for: begin - source.sourceStart),
                         duration: rate.timelineDuration(for: end - begin), title: title)
+            clip.captionRole = .original; clip.captionGroupID = source.id
             clip.connection = ClipConnection(parentID: source.id, sourceStart: begin, sourceDuration: end - begin, generatedText: text)
             return clip
         }
@@ -83,7 +84,10 @@ public enum CaptionEditing {
         firstStyle.text = ""; secondStyle.text = ""
         guard firstStyle == secondStyle, first.transform == second.transform, first.visual == second.visual, first.volume == second.volume, first.playbackRate == second.playbackRate else { throw ProjectError("자막의 글꼴·스타일·위치·효과가 다릅니다. 먼저 같은 스타일로 맞추세요.") }
         guard (first.keyframes ?? []).isEmpty, (second.keyframes ?? []).isEmpty, [first.fadeIn, first.fadeOut, first.audioFadeIn, first.audioFadeOut, second.fadeIn, second.fadeOut, second.audioFadeIn, second.audioFadeOut].allSatisfy({ ($0 ?? .zero) == .zero }) else { throw ProjectError("움직임·페이드가 있는 자막은 효과 손실을 방지하기 위해 합칠 수 없습니다.") }
-        var result = first
+        guard CaptionQuery.role(of: first) == CaptionQuery.role(of: second), first.captionGroupID == second.captionGroupID,
+              first.captionMetadata?.translatedFrom == second.captionMetadata?.translatedFrom,
+              first.captionMetadata?.speaker == second.captionMetadata?.speaker, first.captionMetadata?.speakerManual == second.captionMetadata?.speakerManual else { throw ProjectError("같은 역할·원문 그룹의 자막만 합칠 수 있습니다.") }
+        var result = first; result.captionRole = CaptionQuery.role(of: first)
         result.duration = try second.start.adding(second.duration).subtracting(first.start)
         result.title?.text = firstTitle.text + "\n" + secondTitle.text
         result.name = "합친 자막"

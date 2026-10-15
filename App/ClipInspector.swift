@@ -6,6 +6,8 @@ struct ClipInspector: View {
     let track: Track
     let clip: Clip
     @State private var draft = Clip()
+    @State private var chromaColorPresented = false
+    @State private var chromaColorDraft: ChromaColorDraft?
     @State private var titleExpanded = true
     @State private var start = "0"
     @State private var source = "0"
@@ -18,6 +20,13 @@ struct ClipInspector: View {
     @State private var titleX = "0.5"
     @State private var titleY = "0.8"
     @State private var rate = 1.0
+    @State private var rampPreset = SpeedRampPreset.slowDown
+    @State private var rampPieces = 8
+    @State private var rampMutes = true
+    @State private var rampCustom = false
+    @State private var rampFrom = 1.0
+    @State private var rampTo = 0.3
+    @State private var freezeSeconds = 2.0
     @State private var selectedKeyTime: MediaTime?
     @State private var keySelectionPlayhead: Double?
     @State private var interpolation = KeyframeInterpolation.linear
@@ -46,6 +55,7 @@ struct ClipInspector: View {
                 if let transition = model.transitionOf(clip, on: track) { DisclosureGroup("전환 효과") { transitionChangeControls(transition) } }
                 if track.kind != .audio { DisclosureGroup("화면 배치") { transformControls } }
                 if temporal { DisclosureGroup("재생 속도") { speedControls } }
+                if temporal && clip.assetID != nil { DisclosureGroup("속도 램프·정지 화면·거꾸로") { speedToolControls } }
                 if hasSound {
                     Divider()
                     AudioTools(model: model)
@@ -59,7 +69,11 @@ struct ClipInspector: View {
                     fadeSlider("화면 페이드 아웃", \.fadeOut)
                 }
                 if isVideoClip { DisclosureGroup("손떨림 보정") { stabilizationControls } }
-                if clip.title == nil && track.kind != .audio { DisclosureGroup("색 보정과 크롭") { colorControls } }
+                if clip.title == nil && track.kind != .audio {
+                    DisclosureGroup("크로마키") { chromaControls }
+                    DisclosureGroup("도형 마스크") { maskControls }
+                    DisclosureGroup("색 보정과 크롭") { colorControls }
+                }
                 Button("입력한 숫자 적용") { apply() }.buttonStyle(.jhPrimary).frame(maxWidth: .infinity).disabled(track.isLocked)
                 DisclosureGroup("키프레임") { keyframeControls }
                 Menu("다른 트랙으로 이동") {
@@ -67,14 +81,21 @@ struct ClipInspector: View {
                         Button(destination.name) { model.moveSelectedClip(to: destination) }.disabled(destination.isLocked)
                     }
                 }
-                if track.kind == .video { DisclosureGroup("다음 장면과 전환") { transitionAddControls } }
+                if track.kind == .video || TransitionEditing.context(of: track, in: model.project.sequence) != nil { DisclosureGroup("다음 장면과 전환") { transitionAddControls } }
                 Button("이 클립으로 이동") { model.seek(clip.start.seconds) }.buttonStyle(.jhTool)
                 Divider()
                 Button("일반 삭제 · 빈 공간 유지", role: .destructive) { model.remove() }.buttonStyle(.borderless)
                 Button("리플 삭제 · 연결 포함", role: .destructive) { model.remove(ripple: true) }.buttonStyle(.borderless)
                 Text("연결 클립과 ‘리플 편집에 함께 이동’ 트랙도 반영됩니다. 잠긴 연결 트랙이 있으면 편집을 중단합니다.").font(JH.Font.caption).foregroundStyle(.secondary)
             }.padding(15)
-        }.onAppear { sync() }.onChange(of: clip) { sync() }
+        }.onAppear { sync() }.onChange(of: clip) {
+            if chromaColorDraft != nil { finishChromaColor(apply: false) }
+            sync()
+        }.onDisappear { if chromaColorDraft != nil { finishChromaColor(apply: false) } }
+        .onChange(of: model.busyDocument) { if model.busyDocument && chromaColorDraft != nil { finishChromaColor(apply: false) } }
+        .onChange(of: track.isLocked) { if track.isLocked && chromaColorDraft != nil { finishChromaColor(apply: false) } }
+        .onChange(of: model.asyncDocumentRevision) { if chromaColorDraft != nil { finishChromaColor(apply: false) } }
+        .onChange(of: model.selectedClipID) { if chromaColorDraft != nil { finishChromaColor(apply: false) } }
     }
     private func optionalVisual(_ key: WritableKeyPath<VisualAdjustments, Double?>, fallback: Double) -> Binding<Double> {
         Binding(get: { draft.visual?[keyPath: key] ?? fallback }, set: { value in if draft.visual == nil { draft.visual = VisualAdjustments() }; draft.visual?[keyPath: key] = value })
@@ -108,12 +129,15 @@ struct ClipInspector: View {
             TextField("배경색 · RRGGBB", text: style(\.backgroundHex)).textFieldStyle(.roundedBorder).onSubmit { commitNow() }
             slider("배경 여백 · px", style(\.padding), 0...80)
             slider("줄 간격 · px", style(\.lineSpacing), 0...80)
-            Stepper("최대 \(draft.title?.style?.maxLines ?? 0)줄 · 0은 제한 없음", value: style(\.maxLines), in: 0...20).font(JH.Font.caption)
+            Stepper("목표 \(draft.title?.style?.maxLines ?? 0)줄 · 0은 제한 없음", value: style(\.maxLines), in: 0...20).font(JH.Font.caption)
                 .onChange(of: draft.title?.style?.maxLines) { commitNow() }
             Toggle("글자 그림자", isOn: style(\.shadow)).font(JH.Font.label)
                 .onChange(of: draft.title?.style?.shadow) { commitNow() }
-            if let title = draft.title, let info = try? TitlePreviewRenderer.layout(title: title, canvasWidth: Double(model.project.sequence.width)), info.wasTruncated {
-                Text("\(info.totalLines)줄 중 \(info.visibleLines)줄만 출력됩니다. 글자 크기나 최대 줄 수를 조절하세요.").font(JH.Font.caption).foregroundStyle(JH.Palette.warning)
+            if let title = draft.title, let info = try? TitlePreviewRenderer.layout(title: title, canvasWidth: Double(model.project.sequence.width)), info.exceedsLineLimit {
+                Text("실제 \(info.totalLines)줄 · 목표 줄 수를 초과해도 전체 문구를 표시합니다. 글자 크기나 문구 분할을 검토하세요.").font(JH.Font.caption).foregroundStyle(JH.Palette.warning)
+            }
+            if let report = try? CaptionReadability.assess(draft, width: model.project.sequence.width, height: model.project.sequence.height) {
+                ForEach(report.warnings, id: \.self) { Text($0).font(JH.Font.micro).foregroundStyle(JH.Palette.warning) }
             }
         }
     }
@@ -127,6 +151,13 @@ struct ClipInspector: View {
                 Toggle("화면 채움", isOn: $draft.transform.fill).font(JH.Font.label)
                     .onChange(of: draft.transform.fill) { commitNow() }
             }
+            Picker("블렌드 모드", selection: Binding(get: { draft.blendMode ?? .normal }, set: { mode in
+                draft.blendMode = mode == .normal ? nil : mode
+                commitNow()
+            })) {
+                ForEach(ClipBlendMode.allCases, id: \.self) { Text($0.label).tag($0) }
+            }.disabled(track.isLocked || model.busyDocument)
+            Text("아래 트랙의 색과 섞습니다. 불투명도를 낮추면 효과가 약해집니다.").font(JH.Font.micro).foregroundStyle(.secondary)
             slider("불투명도", $draft.transform.opacity, 0...1)
         }
     }
@@ -140,6 +171,44 @@ struct ClipInspector: View {
             Text("원본 구간은 유지하고 같은 트랙의 뒤 클립을 이동합니다. 소리 높이를 유지하며 일정 속도로 재생합니다.").font(JH.Font.caption).foregroundStyle(.secondary)
         }
     }
+    @ViewBuilder private var speedToolControls: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Divider()
+            Text("속도 램프").font(JH.Font.sectionTitle)
+            Text("클립을 같은 길이의 조각으로 나누고 조각마다 속도를 달리해 서서히 느려지거나 빨라지게 합니다. 결과는 평범한 클립들이라 자르기·되돌리기·저장이 그대로 동작합니다.").font(JH.Font.caption).foregroundStyle(.secondary)
+            Picker("모양", selection: $rampPreset) { ForEach(SpeedRampPreset.allCases, id: \.self) { Text($0.label).tag($0) } }.disabled(rampCustom)
+            Toggle("시작·끝 속도 직접 정하기", isOn: $rampCustom)
+            if rampCustom {
+                Picker("시작 속도", selection: $rampFrom) { ForEach([0.25, 0.3, 0.5, 1, 1.5, 2, 3, 4], id: \.self) { Text(String(format: "%g배", $0)).tag($0) } }
+                Picker("끝 속도", selection: $rampTo) { ForEach([0.25, 0.3, 0.5, 1, 1.5, 2, 3, 4], id: \.self) { Text(String(format: "%g배", $0)).tag($0) } }
+            }
+            Stepper("조각 수 \(rampPieces)개", value: $rampPieces, in: SpeedRampPlan.allowedPieces)
+            Text("조각이 많을수록 변화가 매끄럽습니다. 이 클립에는 \(model.suggestedRampPieces)개를 권합니다.").font(JH.Font.micro).foregroundStyle(.secondary)
+            Toggle("램프 구간 소리 끄기", isOn: $rampMutes)
+            Button("속도 램프 적용") {
+                if rampCustom { model.applySpeedRamp(from: rampFrom, to: rampTo, pieces: rampPieces, mutesAudio: rampMutes) }
+                else { model.applySpeedRamp(preset: rampPreset, pieces: rampPieces, mutesAudio: rampMutes) }
+            }.buttonStyle(.jhTool).disabled(track.isLocked || model.busyDocument)
+            if clip.assetID.flatMap({ id in model.project.assets.first { $0.id == id } })?.kind == .video {
+                Divider()
+                Text("정지 화면").font(JH.Font.sectionTitle)
+                Text("선택한 메인 영상의 현재 보정·움직임을 반영한 화면을 멈춥니다. 자막·오버레이는 별도로 재생되며, 뒤 장면은 그만큼 밀립니다.").font(JH.Font.caption).foregroundStyle(.secondary)
+                Stepper(String(format: "멈춰 있는 시간 %.1f초", freezeSeconds), value: $freezeSeconds, in: FreezeFrame.secondsRange, step: 0.5)
+                Button("재생 위치에 정지 화면 넣기") { model.makeFreezeFrame(seconds: freezeSeconds) }.buttonStyle(.jhTool).disabled(model.freezeFrameProblem != nil || model.busyDocument)
+                if let problem = model.freezeFrameProblem { Text(problem).font(JH.Font.micro).foregroundStyle(.secondary) }
+                Divider()
+                Text("거꾸로 재생").font(JH.Font.sectionTitle)
+                Text("이 클립의 구간을 거꾸로 만든 사본 파일을 만들어 연결합니다(소리도 거꾸로). 원본 영상은 바뀌지 않고, 손떨림 분석 결과는 지워집니다.").font(JH.Font.caption).foregroundStyle(.secondary)
+                if model.productivityBusy {
+                    ProgressView(); Text(model.productivityStatus).font(JH.Font.micro)
+                    Button("취소") { model.cancelProductivity() }.buttonStyle(.jhTool)
+                } else {
+                    Button("거꾸로 사본 만들기") { model.reverseSelectedClip() }.buttonStyle(.jhTool).disabled(model.reverseProblem != nil || model.busyDocument)
+                    if let problem = model.reverseProblem { Text(problem).font(JH.Font.micro).foregroundStyle(.secondary) }
+                }
+            }
+        }
+    }
     private var colorControls: some View {
         Group {
             Divider()
@@ -151,16 +220,188 @@ struct ClipInspector: View {
             slider("색조", optionalVisual(\.tint, fallback: 0), -100...100)
             slider("어두운 영역", optionalVisual(\.shadows, fallback: 0), -0.2...0.2)
             slider("밝은 영역", optionalVisual(\.highlights, fallback: 0), -0.2...0.2)
-            slider("그린스크린 제거", optionalVisual(\.greenScreen, fallback: 0), 0...1)
-            Toggle("타원 마스크", isOn: Binding(get: { draft.visual?.ellipseMask == true }, set: { value in if draft.visual == nil { draft.visual = VisualAdjustments() }; draft.visual?.ellipseMask = value; commitNow() }))
+
             Button(draft.visual?.lut?.name ?? "3D LUT 가져오기…") { model.importLUT() }
             if draft.visual?.lut != nil { Button("LUT 해제") { draft.visual?.lut = nil; commitNow() } }
             slider("왼쪽 크롭", visual(\.cropLeft), 0...0.45)
             slider("오른쪽 크롭", visual(\.cropRight), 0...0.45)
             slider("위쪽 크롭", visual(\.cropTop), 0...0.45)
             slider("아래쪽 크롭", visual(\.cropBottom), 0...0.45)
-            Button("색·크롭 초기화") { draft.visual = nil; commitNow() }.font(JH.Font.caption)
+            Button("색·크롭 초기화") {
+                let shape = draft.visual?.shapeMask, legacy = draft.visual?.ellipseMask
+                let key = draft.visual?.chromaKey, green = draft.visual?.greenScreen
+                if shape != nil || legacy == true || key != nil || green != nil {
+                    var reset = VisualAdjustments(); reset.shapeMask = shape; reset.ellipseMask = legacy
+                    reset.chromaKey = key; reset.greenScreen = green; draft.visual = reset
+                } else { draft.visual = nil }
+                commitNow()
+            }.font(JH.Font.caption)
         }
+    }
+    private enum ChromaChoice: String, Hashable { case none, legacy, selected }
+    private var chromaChoice: ChromaChoice {
+        if draft.visual?.chromaKey != nil { return .selected }
+        return draft.visual?.greenScreen != nil ? .legacy : .none
+    }
+    private var chromaControls: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Picker("배경 색 제거", selection: Binding(get: { chromaChoice }, set: { choice in
+                guard !track.isLocked, !model.busyDocument else { return }
+                if draft.visual == nil { draft.visual = VisualAdjustments() }
+                switch choice {
+                case .none: draft.visual?.chromaKey = nil; draft.visual?.greenScreen = nil
+                case .legacy: draft.visual?.chromaKey = nil; draft.visual?.greenScreen = draft.visual?.greenScreen ?? 0.5
+                case .selected: draft.visual?.greenScreen = nil; draft.visual?.chromaKey = draft.visual?.chromaKey ?? ChromaKey()
+                }
+                commitNow()
+            })) {
+                Text("없음").tag(ChromaChoice.none)
+                Text("기존 그린스크린").tag(ChromaChoice.legacy)
+                Text("선택 색").tag(ChromaChoice.selected)
+            }.accessibilityIdentifier("chroma-mode")
+            if chromaChoice == .legacy {
+                slider("그린스크린 제거", optionalVisual(\.greenScreen, fallback: 0), 0...1)
+                Text("이전 문서의 녹색 제거 방식과 강도를 유지합니다.").font(JH.Font.micro).foregroundStyle(.secondary)
+            }
+            if let key = draft.visual?.chromaKey {
+                Button("키 색 편집…") {
+                    guard !track.isLocked, !model.busyDocument, !model.isBuilding else { return }
+                    guard let transaction = ChromaColorDraft.begin(in: model, trackID: track.id, clipID: clip.id) else { return }
+                    chromaColorDraft = transaction; chromaColorPresented = true
+                }.buttonStyle(.jhTool).accessibilityIdentifier("chroma-color-edit")
+                .popover(isPresented: Binding(get: { chromaColorPresented }, set: { value in
+                    if !value { finishChromaColor(apply: false) }
+                })) {
+                    if let transaction = chromaColorDraft {
+                        VStack(alignment: .leading, spacing: 12) {
+                            Text("제거할 색 · sRGB").font(.headline)
+                            ColorPicker("키 색", selection: Binding(get: {
+                                let current = chromaColorDraft?.key ?? transaction.key
+                                return Color(.sRGB, red: current.keyRed, green: current.keyGreen, blue: current.keyBlue)
+                            }, set: { color in
+                                guard var current = chromaColorDraft, current.id == transaction.id else { return }
+                                do {
+                                    if try current.select(NSColor(color), in: model) { chromaColorDraft = current }
+                                    else { finishChromaColor(apply: false) }
+                                } catch { model.error = error.localizedDescription }
+                            }), supportsOpacity: false)
+                            chromaDraftChannel("빨강", \.keyRed, transaction: transaction)
+                            chromaDraftChannel("초록", \.keyGreen, transaction: transaction)
+                            chromaDraftChannel("파랑", \.keyBlue, transaction: transaction)
+                            Text("색 선택기 또는 RGB 슬라이더로 고른 뒤 적용하세요. 적용 전에는 영상이 바뀌지 않습니다.").font(.caption).fixedSize(horizontal: false, vertical: true)
+                            HStack {
+                                Button("취소") { finishChromaColor(apply: false) }.keyboardShortcut(.cancelAction)
+                                Spacer()
+                                Button("적용") { finishChromaColor(apply: true) }.keyboardShortcut(.defaultAction)
+                            }
+                        }.padding().frame(width: 310)
+                    }
+                }
+                slider("색 유사도", chromaValue(\.similarity), 0...1)
+                slider("경계 부드러움", chromaValue(\.softness), 0...max(0, 1 - key.similarity))
+                if key.isChromatic {
+                    slider("색 번짐 제거", chromaValue(\.spillReduction), 0...1)
+                } else {
+                    Text("검정·흰색·회색 키는 밝기로 구별하며 색 번짐 제거를 사용하지 않습니다.").font(JH.Font.micro).foregroundStyle(.secondary)
+                }
+                Text("유사도가 높으면 전경의 비슷한 색도 사라질 수 있습니다. 번짐 제거를 0으로 하면 원래 색을 유지합니다. 마스크는 키를 적용한 뒤 계산합니다.").font(JH.Font.micro).foregroundStyle(.secondary)
+            }
+        }.disabled(track.isLocked || model.busyDocument)
+    }
+    private func chromaDraftChannel(_ name: String, _ path: WritableKeyPath<ChromaKey, Double>, transaction: ChromaColorDraft) -> some View {
+        let value = (chromaColorDraft?.key ?? transaction.key)[keyPath: path]
+        return VStack(alignment: .leading, spacing: 4) {
+            HStack {
+                Text(name)
+                Spacer()
+                Text("\(Int((value * 255).rounded())) / 255").monospacedDigit()
+            }.font(.caption)
+            Slider(value: Binding(get: {
+                (chromaColorDraft?.key ?? transaction.key)[keyPath: path]
+            }, set: { value in
+                guard var current = chromaColorDraft, current.id == transaction.id else { return }
+                var key = current.key
+                key[keyPath: path] = value
+                do {
+                    let color = NSColor(srgbRed: key.keyRed, green: key.keyGreen, blue: key.keyBlue, alpha: 1)
+                    if try current.select(color, in: model) { chromaColorDraft = current }
+                    else { finishChromaColor(apply: false) }
+                } catch { model.error = error.localizedDescription }
+            }), in: 0...1)
+            .accessibilityLabel("키 색 \(name) · sRGB")
+            .accessibilityValue("\(Int((value * 255).rounded())) / 255")
+        }
+    }
+    private func chromaValue(_ path: WritableKeyPath<ChromaKey, Double>) -> Binding<Double> {
+        Binding(get: { (draft.visual?.chromaKey ?? ChromaKey())[keyPath: path] }, set: { value in
+            guard !track.isLocked, !model.busyDocument else { return }
+            var key = draft.visual?.chromaKey ?? ChromaKey()
+            key[keyPath: path] = value
+            if path == \ChromaKey.similarity { key.softness = min(key.softness, max(0, 1 - value)) }
+            if path == \ChromaKey.softness { key.softness = min(value, max(0, 1 - key.similarity)) }
+            if draft.visual == nil { draft.visual = VisualAdjustments() }
+            draft.visual?.chromaKey = key; draft.visual?.greenScreen = nil
+        })
+    }
+    private func finishChromaColor(apply: Bool) {
+        guard var transaction = chromaColorDraft else { chromaColorPresented = false; return }
+        // Retire the view transaction before closing NSColorPanel; late setter closures carry its old id.
+        chromaColorDraft = nil; chromaColorPresented = false
+        NSColorPanel.shared.close()
+        if apply { _ = transaction.apply(to: model) } else { transaction.cancel() }
+    }
+    private enum MaskChoice: String, Hashable { case none, legacy, ellipse, rectangle }
+    private var maskChoice: MaskChoice {
+        if let shape = draft.visual?.shapeMask { return shape.kind == .ellipse ? .ellipse : .rectangle }
+        return draft.visual?.ellipseMask == true ? .legacy : .none
+    }
+    private var maskControls: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Picker("모양", selection: Binding(get: { maskChoice }, set: { choice in
+                if draft.visual == nil { draft.visual = VisualAdjustments() }
+                switch choice {
+                case .none: draft.visual?.shapeMask = nil; draft.visual?.ellipseMask = nil
+                case .legacy: draft.visual?.shapeMask = nil; draft.visual?.ellipseMask = true
+                case .ellipse, .rectangle:
+                    var shape = draft.visual?.shapeMask ?? ShapeMask()
+                    shape.kind = choice == .ellipse ? .ellipse : .rectangle
+                    draft.visual?.shapeMask = shape; draft.visual?.ellipseMask = nil
+                }
+                commitNow()
+            })) {
+                Text("없음").tag(MaskChoice.none)
+                if draft.visual?.ellipseMask == true { Text("기존 타원 유지").tag(MaskChoice.legacy) }
+                Text("타원").tag(MaskChoice.ellipse)
+                Text("사각형").tag(MaskChoice.rectangle)
+            }.disabled(track.isLocked || model.busyDocument)
+            if draft.visual?.ellipseMask == true {
+                Text("저장된 타원 모양을 그대로 유지합니다. 타원 또는 사각형을 고르면 위치와 크기를 조절할 수 있습니다.").font(JH.Font.micro).foregroundStyle(.secondary)
+            }
+            if draft.visual?.shapeMask != nil {
+                slider("가로 중심", maskPercent(\.centerX), -100...200, suffix: "%")
+                slider("세로 중심", maskPercent(\.centerY), -100...200, suffix: "%")
+                slider("가로 크기", maskPercent(\.width), 1...200, suffix: "%")
+                slider("세로 크기", maskPercent(\.height), 1...200, suffix: "%")
+                slider("회전", maskValue(\.rotation), -180...180, suffix: "°")
+                slider("테두리 부드러움", maskPercent(\.feather), 0...50, suffix: "%")
+                Text("크롭한 영상 기준입니다. 중심 0%는 왼쪽·아래, 100%는 오른쪽·위입니다. 테두리는 도형 반지름의 지정 비율만큼 안쪽으로 부드러워집니다. 클립의 이동·확대·회전과 함께 움직입니다.").font(JH.Font.micro).foregroundStyle(.secondary)
+                Button("마스크 설정 초기화") {
+                    draft.visual?.shapeMask = ShapeMask(kind: draft.visual?.shapeMask?.kind ?? .ellipse)
+                    commitNow()
+                }.buttonStyle(.jhTool).disabled(track.isLocked || model.busyDocument)
+            }
+        }.disabled(track.isLocked || model.busyDocument)
+    }
+    private func maskValue(_ key: WritableKeyPath<ShapeMask, Double>) -> Binding<Double> {
+        Binding(get: { (draft.visual?.shapeMask ?? ShapeMask())[keyPath: key] }, set: { value in
+            if draft.visual == nil { draft.visual = VisualAdjustments() }
+            var shape = draft.visual?.shapeMask ?? ShapeMask(); shape[keyPath: key] = value
+            draft.visual?.shapeMask = shape; draft.visual?.ellipseMask = nil
+        })
+    }
+    private func maskPercent(_ key: WritableKeyPath<ShapeMask, Double>) -> Binding<Double> {
+        let value = maskValue(key)
+        return Binding(get: { value.wrappedValue * 100 }, set: { value.wrappedValue = $0 / 100 })
     }
     private var keyframeControls: some View {
         Group {
@@ -199,7 +440,7 @@ struct ClipInspector: View {
     }
     @ViewBuilder private func transitionChangeControls(_ transition: ClipTransition) -> some View {
         VStack(alignment: .leading, spacing: 8) {
-            Text("이 클립이 앞 클립 위로 들어오는 방식입니다. 길이(\(String(format: "%.1f", transition.duration.seconds))초)는 그대로 두고 효과만 바꿉니다.").font(JH.Font.micro).foregroundStyle(.secondary)
+            Text("이 장면과 앞 장면 사이의 전환입니다. 길이를 바꾸면 뒤 장면과 연결 자막도 함께 이동합니다.").font(JH.Font.micro).foregroundStyle(.secondary)
             Picker("효과", selection: Binding(get: { transition.kind }, set: { model.changeTransition(kind: $0, direction: transition.direction) })) {
                 ForEach(TransitionKind.allCases, id: \.self) { Text($0.label).tag($0) }
             }.disabled(track.isLocked)
@@ -208,6 +449,9 @@ struct ClipInspector: View {
                     ForEach(TransitionDirection.allCases, id: \.self) { Text($0.label).tag($0) }
                 }.disabled(track.isLocked)
             }
+            Stepper(String(format: "전환 길이 %.2f초", transition.duration.seconds), value: Binding(get: { transition.duration.seconds }, set: { model.resizeTransition(seconds: $0) }), in: 0.05...3, step: 0.05)
+                .disabled(track.isLocked || model.busyDocument)
+            Button("전환 제거 · 메인 트랙으로 복귀") { model.removeTransition() }.buttonStyle(.jhTool).disabled(track.isLocked || model.busyDocument)
         }
     }
     @ViewBuilder private var titleAnimationControls: some View {
@@ -221,10 +465,10 @@ struct ClipInspector: View {
                 Text("없음").tag(TitleAnimationKind?.none); ForEach(TitleAnimationKind.allCases, id: \.self) { Text($0.label).tag(TitleAnimationKind?.some($0)) }
             }.disabled(track.isLocked)
             if current.inKind != nil {
-                slider("등장 길이", Binding(get: { draft.titleAnimation?.inSeconds ?? current.inSeconds }, set: { draft.titleAnimation?.inSeconds = $0 }), 0.1...min(3, max(0.2, clip.duration.seconds)), suffix: "초")
+                slider("등장 길이", animationSeconds(\.inSeconds), 0.001...min(3, max(0.001, clip.duration.seconds)), suffix: "초")
             }
             if current.outKind != nil {
-                slider("퇴장 길이", Binding(get: { draft.titleAnimation?.outSeconds ?? current.outSeconds }, set: { draft.titleAnimation?.outSeconds = $0 }), 0.1...min(3, max(0.2, clip.duration.seconds)), suffix: "초")
+                slider("퇴장 길이", animationSeconds(\.outSeconds), 0.001...min(3, max(0.001, clip.duration.seconds)), suffix: "초")
             }
             if !current.isEmpty {
                 Button("같은 효과를 모든 자막에 적용") { model.applyTitleAnimationToAllCaptions(current) }.buttonStyle(.jhTool).disabled(model.busyDocument)
@@ -233,9 +477,19 @@ struct ClipInspector: View {
         }
     }
     private var isVideoClip: Bool { clip.title == nil && clip.assetID.flatMap { id in model.project.assets.first { $0.id == id } }?.kind == .video }
+    private func animationSeconds(_ path: WritableKeyPath<TitleAnimation, Double>) -> Binding<Double> {
+        Binding(get: {
+            let value = draft.titleAnimation ?? clip.titleAnimation ?? TitleAnimation()
+            return value[keyPath: path] / (value.timeScale ?? 1)
+        }, set: { seconds in
+            var value = EditorModel.restartedTitleAnimation(draft.titleAnimation ?? clip.titleAnimation ?? TitleAnimation(), duration: clip.duration)
+            value[keyPath: path] = seconds; draft.titleAnimation = value
+        })
+    }
     @ViewBuilder private var stabilizationControls: some View {
         VStack(alignment: .leading, spacing: 8) {
             Text("영상 속 손떨림을 분석해 줄입니다. 분석 결과는 프로젝트에 저장되고, 원본 영상은 바뀌지 않습니다. 크게 움직이는 피사체가 있어도 배경 기준으로 잡습니다.").font(JH.Font.micro).foregroundStyle(.secondary)
+            Text("신뢰도가 낮으면 보정을 제한하거나 꺼둡니다. 롤링셔터의 휘어짐은 교정하지 않습니다.").font(JH.Font.caption).foregroundStyle(.secondary)
             if model.productivityBusy {
                 ProgressView(); Text(model.productivityStatus).font(JH.Font.micro)
                 Button("분석 취소") { model.cancelProductivity() }.buttonStyle(.jhTool)
@@ -273,6 +527,8 @@ struct ClipInspector: View {
             Slider(value: live, in: range, onEditingChanged: { editing in
                 if editing { model.beginLiveEdit() } else { model.commitLiveEdit() }
             }).controlSize(.small).disabled(track.isLocked)
+                .accessibilityLabel(name)
+                .accessibilityValue(String(format: "%.2f", binding.wrappedValue) + suffix)
         }
     }
     /// The clip as the controls currently describe it. Timing stays exactly as committed: only the

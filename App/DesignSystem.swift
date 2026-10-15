@@ -168,9 +168,7 @@ extension View {
 
     /// Icon-only controls are invisible to VoiceOver without this; `help` alone is not an a11y label.
     func jhIconLabel(_ label: String, hint: String? = nil) -> some View {
-        accessibilityLabel(Text(label))
-            .accessibilityHint(hint.map(Text.init) ?? Text(""))
-            .help(hint ?? label)
+        modifier(JHLocalizedIconLabel(label: label, hint: hint))
     }
 }
 
@@ -219,4 +217,17 @@ extension PrimitiveButtonStyle where Self == JHPrimaryButtonStyle {
 }
 extension PrimitiveButtonStyle where Self == JHToolButtonStyle {
     static var jhTool: JHToolButtonStyle { JHToolButtonStyle() }
+}
+
+/// Dynamic labels also observe locale changes; no document or player state is rebuilt.
+private struct JHLocalizedIconLabel: ViewModifier {
+    let label: String
+    let hint: String?
+    @Environment(\.locale) private var locale
+    func body(content: Content) -> some View {
+        let _ = locale.identifier
+        content.accessibilityLabel(Text(UIL10n.text(label)))
+            .accessibilityHint(hint.map { Text(UIL10n.text($0)) } ?? Text(""))
+            .help(UIL10n.text(hint ?? label))
+    }
 }

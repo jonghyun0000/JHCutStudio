@@ -22,6 +22,8 @@ public struct TextStyle: Codable, Equatable, Sendable {
     public var shadow: Bool
     public var maxLines: Int
     public var lineSpacing: Double
+    /// Optional wrapping width; legacy documents retain their 88% width.
+    public var wrapWidthFraction: Double?
     public init(strokeHex: String = "000000", strokeWidth: Double = 0, backgroundHex: String = "000000", backgroundOpacity: Double = 0, padding: Double = 20, alignment: TextAlignment = .center, shadow: Bool = true, maxLines: Int = 0, lineSpacing: Double = 8) {
         self.strokeHex = strokeHex; self.strokeWidth = strokeWidth; self.backgroundHex = backgroundHex; self.backgroundOpacity = backgroundOpacity; self.padding = padding; self.alignment = alignment; self.shadow = shadow; self.maxLines = maxLines; self.lineSpacing = lineSpacing
     }
@@ -48,7 +50,11 @@ public struct VisualAdjustments: Codable, Equatable, Sendable {
     public var highlights: Double?
     public var lut: CubeLUT?
     public var ellipseMask: Bool?
+    /// nil retains the original fixed ellipse flag and rendering exactly.
+    public var shapeMask: ShapeMask?
     public var greenScreen: Double?
+    /// nil preserves the legacy greenScreen path without migrating saved values.
+    public var chromaKey: ChromaKey?
     public var cropLeft: Double
     public var cropRight: Double
     public var cropTop: Double

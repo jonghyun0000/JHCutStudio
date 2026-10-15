@@ -49,6 +49,8 @@ public enum AssetLibraryError: LocalizedError {
 /// Fully offline, file-backed asset catalog. manifest.json is a JSON array of LibraryAsset objects.
 public struct AssetLibrary: Sendable {
     public let assets: [LibraryAsset]
+    /// Exact prior bytes for restoring saved projects; never offered as new catalog choices.
+    public let compatibilityAssets: [LibraryAsset]
     public let rootURL: URL
     public init(rootURL: URL? = nil) throws {
         let manager = FileManager.default
@@ -64,8 +66,11 @@ public struct AssetLibrary: Sendable {
         let manifest = self.rootURL.appendingPathComponent("manifest.json")
         guard manager.fileExists(atPath: manifest.path) else { throw AssetLibraryError.missing(manifest.path) }
         assets = try JSONDecoder().decode([LibraryAsset].self, from: Data(contentsOf: manifest))
+        let compatibility = self.rootURL.appendingPathComponent("compatibility.json")
+        compatibilityAssets = manager.fileExists(atPath: compatibility.path)
+            ? try JSONDecoder().decode([LibraryAsset].self, from: Data(contentsOf: compatibility)) : []
         var identifiers = Set<String>(), paths = Set<String>()
-        for asset in assets {
+        for asset in assets + compatibilityAssets {
             guard !asset.id.isEmpty, identifiers.insert(asset.id).inserted, paths.insert(asset.relativePath).inserted,
                   !asset.name.isEmpty, !asset.author.isEmpty, !asset.license.isEmpty,
                   asset.sha256.count == 64, asset.sha256.allSatisfy({ $0.isHexDigit }),
@@ -75,14 +80,14 @@ public struct AssetLibrary: Sendable {
     }
     public func url(for asset: LibraryAsset) -> URL {
         // Unknown caller-supplied records cannot escape the library directory.
-        guard assets.contains(where: { $0.id == asset.id && $0.relativePath == asset.relativePath }),
+        guard (assets + compatibilityAssets).contains(where: { $0.id == asset.id && $0.relativePath == asset.relativePath }),
               let result = try? Self.containedURL(relativePath: asset.relativePath, root: rootURL) else {
             return rootURL.appendingPathComponent("__invalid-library-asset__")
         }
         return result
     }
     public func verify() throws {
-        for asset in assets {
+        for asset in assets + compatibilityAssets {
             let location = try Self.containedURL(relativePath: asset.relativePath, root: rootURL)
             var isDirectory: ObjCBool = false
             guard FileManager.default.fileExists(atPath: location.path, isDirectory: &isDirectory), !isDirectory.boolValue else { throw AssetLibraryError.missing(asset.relativePath) }
@@ -93,6 +98,9 @@ public struct AssetLibrary: Sendable {
             let actual = digest.finalize().map { String(format: "%02x", $0) }.joined()
             guard actual == asset.sha256.lowercased() else { throw AssetLibraryError.checksum(asset.name) }
         }
+    }
+    public func asset(matchingSHA256 digest: String) -> LibraryAsset? {
+        (assets + compatibilityAssets).first { $0.sha256.lowercased() == digest.lowercased() }
     }
     private static func containedURL(relativePath: String, root: URL) throws -> URL {
         let components = relativePath.split(separator: "/", omittingEmptySubsequences: false)

@@ -6,7 +6,7 @@ import JHCutCore
   let root = URL(fileURLWithPath: CommandLine.arguments.dropFirst().first ?? "Artifacts/Multilingual-0.6/RealIPhone")
   try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
   // Verified read-only COPIES of the supplied iPhone videos (Scripts/test-real-iphone.sh makes them).
-  // The originals in /Volumes/T7/아이폰/동영상 are never opened by this probe.
+  // Authorized original media are never opened by this probe; only prepared copies are used.
   let folder = URL(fileURLWithPath: CommandLine.arguments.dropFirst(2).first ?? "Artifacts/Upgrade-0.7/RealCopies")
   let names = ["IMG_0140.mov", "IMG_0047.mov", "IMG_9211.mov"]
   var records: [[String: Any]] = []

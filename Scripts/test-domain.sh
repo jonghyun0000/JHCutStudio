@@ -1,7 +1,7 @@
 #!/bin/bash
 set -euo pipefail
 JHCUT_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
-JHCUT_BUILD="$JHCUT_ROOT/Build/domain-tests"
+JHCUT_BUILD="${JHCUT_BUILD_DIR:-$JHCUT_ROOT/Build}/domain-tests"
 export DEVELOPER_DIR="${DEVELOPER_DIR:-/Library/Developer/CommandLineTools}"
 JHCUT_XCODE="${JHCUT_XCODE:-/Applications/Xcode.app/Contents/Developer}"
 JHCUT_TEST_PLATFORM="$JHCUT_XCODE/Platforms/MacOSX.platform/Developer"
@@ -13,9 +13,13 @@ if [[ ! -d "$JHCUT_FRAMEWORKS/XCTest.framework" ]]; then
 fi
 mkdir -p "$JHCUT_BUILD"
 JHCUT_TARGET="$(uname -m)-apple-macosx14.0"
+if [[ "${JHCUT_USE_EXISTING_CORE:-0}" == 1 ]]; then
+    cp "$JHCUT_BUILD_DIR/libJHCutCore.dylib" "$JHCUT_BUILD_DIR/JHCutCore.swiftmodule" "$JHCUT_BUILD/"
+else
 xcrun swiftc -swift-version 5 -target "$JHCUT_TARGET" -parse-as-library -enable-testing -emit-library -emit-module -module-name JHCutCore \
     "$JHCUT_ROOT"/Domain/*.swift "$JHCUT_ROOT"/Persistence/*.swift \
     -emit-module-path "$JHCUT_BUILD/JHCutCore.swiftmodule" -o "$JHCUT_BUILD/libJHCutCore.dylib"
+fi
 cat > "$JHCUT_BUILD/main.swift" <<'SWIFT'
 import Foundation
 import XCTest

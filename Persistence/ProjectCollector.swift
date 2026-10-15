@@ -51,6 +51,9 @@ public enum ProjectCollector {
             if let provenance = asset.provenance, provenance.sha256.count == 64, provenance.sha256.lowercased() != digest {
                 throw ProjectError("출처 체크섬과 실제 원본이 다릅니다: \(asset.name). 재연결 정보를 확인하세요.")
             }
+            if let recorded = asset.contentHash, recorded.count == 64, recorded.lowercased() != digest {
+                throw ProjectError("가져오거나 만든 뒤 파일 내용이 달라졌습니다: \(asset.name). 다른 파일이 같은 이름으로 바뀌었는지 확인하고 재연결하세요.")
+            }
             let relativePath: String
             if let existing = pathsByHash[digest] { relativePath = existing }
             else {

@@ -4,6 +4,7 @@ import JHCutCore
 import ImageIO
 
 struct LibraryBrowser: View {
+    @Environment(\.locale) private var uiLocale
     @ObservedObject var model: EditorModel
     let audioOnly: Bool
     @State private var query = ""
@@ -26,16 +27,17 @@ struct LibraryBrowser: View {
         }
     }
     var body: some View {
+        let _ = uiLocale.identifier // Refresh dynamic display strings without recreating editor state.
         VStack(alignment: .leading, spacing: 10) {
             HStack {
-                Text(audioOnly ? "사운드 라이브러리" : "편집 소스 라이브러리").font(JH.Font.sectionTitle)
+                Text(UIL10n.text(audioOnly ? "사운드 라이브러리" : "편집 소스 라이브러리")).font(JH.Font.sectionTitle)
                 Spacer()
                 Text("\(filtered.count)").font(JH.Font.numeric(11)).foregroundStyle(.secondary)
             }.padding(.top, 14)
             TextField("이름·태그·제작자 검색", text: $query).textFieldStyle(.roundedBorder)
                 .accessibilityLabel(Text("라이브러리 검색"))
             HStack {
-                Picker("종류", selection: $category) { ForEach(categories, id: \.self) { Text($0).tag($0) } }.labelsHidden()
+                Picker("종류", selection: $category) { ForEach(categories, id: \.self) { Text(UIL10n.text($0)).tag($0) } }.labelsHidden()
                 Button { favoritesOnly.toggle() } label: { Image(systemName: favoritesOnly ? "star.fill" : "star") }
                     .buttonStyle(.jhTool)
                     .jhIconLabel(favoritesOnly ? "전체 보기" : "즐겨찾기만 보기")
@@ -61,7 +63,7 @@ struct LibraryBrowser: View {
                     Image(systemName: model.auditionID == asset.id ? "stop.circle.fill" : "play.circle.fill").font(.system(size: 27)).foregroundStyle(JH.Palette.accent)
                 }
                 .buttonStyle(.plain).disabled(model.isExporting)
-                .jhIconLabel(model.auditionID == asset.id ? "미리듣기 정지" : "\(asset.name) 미리듣기")
+                .jhIconLabel(model.auditionID == asset.id ? UIL10n.text("미리듣기 정지") : UIL10n.format("ui.library.asset.preview", asset.name))
             } else if let url = model.bundledLibrary?.url(for: asset) {
                 LibraryThumbnail(url: url).frame(width: 57, height: 47).background(.black.opacity(0.4)).clipShape(RoundedRectangle(cornerRadius: JH.Radius.chip - 2, style: .continuous))
             }
@@ -72,17 +74,17 @@ struct LibraryBrowser: View {
             Spacer(minLength: 0)
             Button { selected = asset.id; model.insertLibraryAsset(asset) } label: { Image(systemName: "plus.circle") }
                 .buttonStyle(.plain)
-                .jhIconLabel("\(asset.name) 추가", hint: "플레이헤드 위치에 추가합니다")
-                .disabled(model.isExporting || model.isImporting)
+                .jhIconLabel(UIL10n.format("ui.library.asset.add", asset.name), hint: "플레이헤드 위치에 추가합니다")
+                .disabled(model.busyDocument)
         }.padding(9).background(selected == asset.id ? JH.Palette.accent.opacity(0.16) : Color.white.opacity(0.03))
             .clipShape(RoundedRectangle(cornerRadius: JH.Radius.chip, style: .continuous)).contentShape(Rectangle()).onTapGesture { selected = asset.id }
     }
     private func subtitle(_ asset: LibraryAsset) -> String {
         let time = asset.duration.map { seconds in
-            seconds >= 60 ? String(format: "%d:%02d · ", Int(seconds) / 60, Int(seconds) % 60) : String(format: "%.1f초 · ", seconds)
+            seconds >= 60 ? String(format: "%d:%02d · ", Int(seconds) / 60, Int(seconds) % 60) : UIL10n.format("ui.library.seconds", seconds)
         } ?? ""
         let resolution = asset.width.flatMap { width in asset.height.map { "\(width)×\($0) · " } } ?? ""
-        return (audioOnly ? time : resolution) + asset.category.korean + " · " + asset.license
+        return (audioOnly ? time : resolution) + UIL10n.text(asset.category.korean) + " · " + asset.license
     }
     private func details(_ asset: LibraryAsset) -> some View {
         VStack(alignment: .leading, spacing: 7) {
@@ -94,13 +96,13 @@ struct LibraryBrowser: View {
                     .buttonStyle(.plain)
                     .jhIconLabel(favorites.contains(asset.id) ? "즐겨찾기 해제" : "즐겨찾기 추가")
             }
-            Text("\(asset.sourceLabel) · \(asset.author) · \(asset.license)").font(JH.Font.caption).foregroundStyle(.secondary)
+            Text(UIL10n.text(asset.sourceLabel) + " · " + asset.author + " · " + asset.license).font(JH.Font.caption).foregroundStyle(.secondary)
             Text(asset.tags.joined(separator: " · ")).font(JH.Font.micro).foregroundStyle(.secondary).lineLimit(2)
             HStack {
                 if let url = URL(string: asset.sourceURL), url.scheme == "https" { Link("원본 출처", destination: url).font(.caption) }
                 if let url = URL(string: asset.licenseURL), url.scheme == "https" { Link("사용 조건", destination: url).font(.caption) }
             }
-            Button(audioOnly ? "현재 위치에 오디오 추가" : "현재 위치에 소스 추가") { model.insertLibraryAsset(asset) }.buttonStyle(.jhPrimary).disabled(model.isExporting || model.isImporting)
+            Button(UIL10n.text(audioOnly ? "현재 위치에 오디오 추가" : "현재 위치에 소스 추가")) { model.insertLibraryAsset(asset) }.buttonStyle(.jhPrimary).disabled(model.busyDocument)
         }
     }
 }

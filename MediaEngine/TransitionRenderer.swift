@@ -11,7 +11,7 @@ enum TransitionRenderer {
         let w = bounds.width, h = bounds.height
         let dir = transition.direction.vector
         func black(_ alpha: Double) -> CIImage { CIImage(color: CIColor(red: 0, green: 0, blue: 0, alpha: alpha)).cropped(to: bounds) }
-        let backdrop = black(1)
+        let backdrop = CIImage(color: .clear).cropped(to: bounds)
         switch transition.kind {
         case .dissolve:
             return incoming.applyingFilter("CIColorMatrix", parameters: ["inputAVector": CIVector(x: 0, y: 0, z: 0, w: p)]).composited(over: below).cropped(to: bounds)

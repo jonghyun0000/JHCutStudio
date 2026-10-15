@@ -29,12 +29,14 @@ public enum StabilizationAnalyzer {
         }
         let scoped = url.startAccessingSecurityScopedResource()
         defer { if scoped { url.stopAccessingSecurityScopedResource() } }
+        let info = try await MediaImporter.inspect(url: url)
+        guard info.supported, info.kind == .video else { throw StabilizationError(info.issue ?? "지원하는 SDR 영상을 선택하세요.") }
         let asset = AVURLAsset(url: url)
         guard let track = try await asset.loadTracks(withMediaType: .video).first else { throw StabilizationError("이 미디어에는 영상 트랙이 없습니다.") }
         let natural = try await track.load(.naturalSize)
         guard natural.width > 0, natural.height > 0 else { throw StabilizationError("영상 크기를 읽지 못했습니다.") }
-        let assetDuration = try await asset.load(.duration).seconds
-        guard sourceStart.seconds >= 0, sourceStart.seconds + duration.seconds <= assetDuration + 0.05 else { throw StabilizationError("분석 구간이 원본 길이를 벗어납니다.") }
+        let available = try await track.load(.timeRange)
+        guard sourceStart.cmTime >= available.start, (sourceStart + duration).cmTime <= available.end else { throw StabilizationError("분석 구간이 원본 영상 트랙의 길이를 벗어납니다.") }
 
         let reader = try AVAssetReader(asset: asset)
         reader.timeRange = CMTimeRange(start: sourceStart.cmTime, duration: duration.cmTime)
@@ -50,24 +52,26 @@ public enum StabilizationAnalyzer {
 
         let total = duration.seconds
         var x: [Float] = [0], y: [Float] = [0], angle: [Float] = [0]
-        var cumulative = (x: 0.0, y: 0.0, a: 0.0), lastIndex = 0, rejected = 0
+        var cumulative = (x: 0.0, y: 0.0, a: 0.0), lastIndex = 0, rejected = 0, attempted = 0
         var previous: [Float]?
-        var firstTime: Double?
+        var firstTime: CMTime?
         guard let estimator = MotionEstimator(width: width, height: height) else { throw StabilizationError("분석 프레임이 너무 작습니다.") }
         while let sample = output.copyNextSampleBuffer() {
             try Task.checkCancellation()
             try autoreleasepool {
                 guard let buffer = CMSampleBufferGetImageBuffer(sample) else { return }
-                let time = CMSampleBufferGetPresentationTimeStamp(sample).seconds
-                if firstTime == nil { firstTime = time }
-                let index = Int(((time - (firstTime ?? time)) / sampleStep).rounded())
+                let pts = CMSampleBufferGetPresentationTimeStamp(sample)
+                guard pts.isNumeric else { throw StabilizationError("프레임 표시 시간이 유효하지 않습니다.") }
+                if firstTime == nil { firstTime = pts }
+                let index = Int(((pts - (firstTime ?? pts)).seconds / sampleStep).rounded())
                 if previous == nil { previous = Self.luma(buffer, width: width, height: height); lastIndex = 0; return }
                 guard index > lastIndex else { return }   // keep one frame per 1/30 s
                 let current = Self.luma(buffer, width: width, height: height)
                 var delta = (x: 0.0, y: 0.0, a: 0.0)
+                attempted += 1
                 if let m = estimator.estimate(previous: previous!, current: current) {
                     let dx = m.dx / Double(width), dy = m.dy / Double(height)
-                    if abs(dx) <= maximumStepTranslation, abs(dy) <= maximumStepTranslation, abs(m.angle) <= maximumStepAngle { delta = (dx, dy, m.angle) } else { rejected += 1 }
+                    if abs(dx) <= maximumStepTranslation, abs(dy) <= maximumStepTranslation, abs(m.angle) <= maximumStepAngle, Double(m.inliers) / Double(max(1, m.usable)) >= 0.5 { delta = (dx, dy, m.angle) } else { rejected += 1 }
                 } else { rejected += 1 }
                 // Frames the reader skipped are filled by holding the same velocity.
                 let gap = index - lastIndex
@@ -85,8 +89,13 @@ public enum StabilizationAnalyzer {
         guard x.count >= 3 else { throw StabilizationError("분석할 프레임이 충분하지 않습니다(최소 0.1초).") }
         progress?(1)
         func rounded(_ v: [Float]) -> [Float] { v.map { ($0 * 100_000).rounded() / 100_000 } }
-        return StabilizationData(step: sampleStep, analyzedStart: sourceStart, frameWidth: Int(natural.width), frameHeight: Int(natural.height),
-                                 x: rounded(x), y: rounded(y), angle: rounded(angle), rejectedSteps: rejected)
+        let confidence = Double(max(0, attempted - rejected)) / Double(max(1, attempted))
+        var data = StabilizationData(enabled: confidence >= 0.5, strength: confidence < 0.65 ? 0.35 : 1,
+                                     step: sampleStep, analyzedStart: MediaTime(firstTime ?? sourceStart.cmTime), frameWidth: Int(natural.width), frameHeight: Int(natural.height),
+                                     x: rounded(x), y: rounded(y), angle: rounded(angle), rejectedSteps: rejected)
+        data.confidence = confidence
+        data.analyzedEnd = sourceStart + duration
+        return data
     }
 
     /// BGRA pixel buffer → luma plane (0…1), row-major, top row first.

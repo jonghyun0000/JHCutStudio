@@ -21,6 +21,10 @@ public enum ProjectValidator {
             var stored = project; stored.sequence = version; stored.derivedSequences = nil
             try validate(stored)
         }
+        guard Set((sequence.speakers ?? []).map(\.id)).count == (sequence.speakers ?? []).count else { throw ProjectError("중복된 화자 ID입니다.") }
+        for profile in sequence.speakers ?? [] {
+            guard SpeakerIdentity.isValid(profile.id), !profile.name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty, isHex(profile.colorHex) else { throw ProjectError("화자 ID·이름·색상이 올바르지 않습니다.") }
+        }
         try ConnectionEditing.validate(sequence)
         let assets = Dictionary(uniqueKeysWithValues: project.assets.map { ($0.id, $0) })
         for asset in project.assets {
@@ -37,12 +41,53 @@ public enum ProjectValidator {
                 guard rate.numerator > 0, rate.denominator > 0, rate.multiplier.isFinite, (0.25...4).contains(rate.multiplier) else { throw ProjectError("재생 속도는 0.25~4배 범위여야 합니다.") }
                 let sourceDuration = try clip.duration.scaled(numerator: rate.numerator, denominator: rate.denominator)
                 let sourceEnd = try clip.sourceStart.adding(sourceDuration)
+                if clip.captionRole != nil || clip.captionGroupID != nil || clip.captionHidden != nil {
+                    guard clip.title != nil else { throw ProjectError("자막 역할·표시는 제목 클립에만 저장할 수 있습니다.") }
+                    if clip.captionRole == .translation { guard clip.captionMetadata?.translatedFrom != nil else { throw ProjectError("번역 자막의 원문 연결이 없습니다.") } }
+                    if clip.captionRole == .title { guard clip.captionGroupID == nil, clip.captionHidden != true else { throw ProjectError("일반 제목에는 자막 그룹·표시 전환을 적용할 수 없습니다.") } }
+                }
+                if let speaker = clip.captionMetadata?.speaker {
+                    guard SpeakerIdentity.isValid(speaker) else { throw ProjectError("자막 화자 ID가 올바르지 않습니다.") }
+                    if let scope = SpeakerIdentity.sourceID(speaker), let parent = clip.connection?.parentID, let sourceAsset = sequence.tracks.flatMap(\.clips).first(where: { $0.id == parent })?.assetID {
+                        guard scope == sourceAsset else { throw ProjectError("자막 화자가 다른 원본에 연결되어 있습니다.") }
+                    }
+                }
+                if let digest = clip.captionMetadata?.reviewDigest {
+                    guard digest.count == 64, digest.utf8.allSatisfy({ (48...57).contains($0) || (97...102).contains($0) }) else { throw ProjectError("자막 검수 이력이 올바르지 않습니다.") }
+                }
+                if let evidence = clip.captionMetadata?.languageEvidence {
+                    guard evidence.count <= 8,evidence.allSatisfy(\.isValid) else {throw ProjectError("자막 언어 판단 근거가 올바르지 않습니다.")}
+                }
+                if let revision = clip.captionMetadata?.translationRevision {
+                    guard revision.isValid, CaptionQuery.role(of: clip) == .translation, clip.captionMetadata?.translatedFrom == revision.sourceCaptionID else { throw ProjectError("번역 생성 이력 또는 원문 ID가 올바르지 않습니다.") }
+                }
                 guard clip.volume.isFinite, clip.volume >= 0, clip.volume <= 4 else { throw ProjectError("볼륨은 0~4 범위여야 합니다.") }
+                if clip.blendMode != nil {
+                    guard track.kind != .audio, clip.title != nil || clip.assetID.flatMap({ assets[$0]?.kind }) != .audio else {
+                        throw ProjectError("블렌드 모드는 영상·이미지·제목 클립에만 쓸 수 있습니다.")
+                    }
+                }
                 let transform = clip.transform
                 guard [transform.x, transform.y, transform.scale, transform.rotation, transform.opacity].allSatisfy(\.isFinite), transform.scale > 0, (0...1).contains(transform.opacity) else { throw ProjectError("클립의 위치·크기·회전·불투명도가 올바르지 않습니다.") }
                 try validateEnvelope(clip.fadeIn, clip.fadeOut, duration: clip.duration)
                 try validateEnvelope(clip.audioFadeIn, clip.audioFadeOut, duration: clip.duration)
                 if let visual = clip.visual {
+                    if let key = visual.chromaKey {
+                        if let problem = key.validationProblem { throw ProjectError(problem) }
+                        guard clip.title == nil, track.kind != .audio,
+                              let assetID = clip.assetID, let asset = assets[assetID], asset.kind != .audio else {
+                            throw ProjectError("선택 색 크로마키는 영상·이미지 클립에만 쓸 수 있습니다.")
+                        }
+                        guard visual.greenScreen == nil else { throw ProjectError("기존 그린스크린과 선택 색 크로마키를 동시에 저장할 수 없습니다.") }
+                    }
+                    if let mask = visual.shapeMask {
+                        if let problem = mask.validationProblem { throw ProjectError(problem) }
+                        guard clip.title == nil, track.kind != .audio,
+                              let assetID = clip.assetID, let asset = assets[assetID], asset.kind != .audio else {
+                            throw ProjectError("도형 마스크는 영상·이미지 클립에만 쓸 수 있습니다.")
+                        }
+                        guard visual.ellipseMask != true else { throw ProjectError("기존 타원과 새 도형 마스크를 동시에 적용할 수 없습니다.") }
+                    }
                     for (value, range) in [(visual.temperature, 2000.0...12000.0), (visual.tint, -100.0...100.0), (visual.shadows, -0.2...0.2), (visual.highlights, -0.2...0.2), (visual.greenScreen, 0.0...1.0)] {
                         if let value { guard value.isFinite, range.contains(value) else { throw ProjectError("색 보정 값이 범위를 벗어났습니다.") } }
                     }
@@ -57,7 +102,14 @@ public enum ProjectValidator {
                     guard clip.title == nil, clip.assetID != nil else { throw ProjectError("손떨림 보정은 영상 클립에만 저장할 수 있습니다.") }
                 }
                 if let transition = clip.transition {
-                    guard clip.title == nil, transition.duration > .zero, transition.duration < clip.duration else { throw ProjectError("전환 길이는 클립보다 짧아야 하며 제목에는 쓸 수 없습니다.") }
+                    guard clip.title == nil, transition.duration > .zero, transition.offset != nil || transition.duration < clip.duration else { throw ProjectError("전환 길이는 클립보다 짧아야 하며 제목에는 쓸 수 없습니다.") }
+                }
+                for fade in clip.transitionAudioFades ?? [] {
+                    guard fade.duration > .zero else { throw ProjectError("전환 오디오 길이가 올바르지 않습니다.") }
+                    var previous: MediaTime?
+                    for point in fade.points ?? [] {
+                        guard point.gain.isFinite, (0...1).contains(point.gain), previous.map({ $0 < point.time }) ?? true else { throw ProjectError("전환 오디오의 시간·게인이 올바르지 않습니다.") }; previous = point.time
+                    }
                 }
                 if let animation = clip.titleAnimation {
                     guard clip.title != nil else { throw ProjectError("글자 애니메이션은 자막·제목 클립에만 쓸 수 있습니다.") }
@@ -76,6 +128,7 @@ public enum ProjectValidator {
                     let hex = title.colorHex.hasPrefix("#") ? String(title.colorHex.dropFirst()) : title.colorHex
                     guard hex.count == 6, hex.allSatisfy({ $0.isASCII && $0.isHexDigit }) else { throw ProjectError("제목 색상은 6자리 RGB 값이어야 합니다.") }
                     if let style = title.style {
+                        if let wrap = style.wrapWidthFraction { guard wrap.isFinite && (0.1...1).contains(wrap) else { throw ProjectError("줄바꿈 너비는 화면의 10~100%입니다.") } }
                         guard isHex(style.strokeHex), isHex(style.backgroundHex), [style.strokeWidth,style.backgroundOpacity,style.padding,style.lineSpacing].allSatisfy(\.isFinite), (0...50).contains(style.strokeWidth), (0...1).contains(style.backgroundOpacity), (0...500).contains(style.padding), (0...300).contains(style.lineSpacing), (0...20).contains(style.maxLines) else { throw ProjectError("제목 스타일의 색상·외곽선·배경·여백·줄 수를 확인하세요.") }
                     }
                     guard rate.numerator == rate.denominator else { throw ProjectError("제목은 재생 속도 대신 길이를 편집하세요.") }
@@ -104,6 +157,7 @@ public enum ProjectValidator {
                 }
             }
         }
+        try TransitionEditing.validate(sequence)
     }
     private static func isHex(_ value: String) -> Bool {
         let hex = value.hasPrefix("#") ? String(value.dropFirst()) : value
@@ -124,6 +178,8 @@ public indirect enum EditCommand {
     case removeTrack(UUID)
     case duplicate(trackID: UUID, clipID: UUID)
     case setRate(trackID: UUID, clipID: UUID, rate: PlaybackRate)
+    /// Cuts the clip into `rates.count` equal source pieces and gives each its own speed (a stepped ramp).
+    case speedRamp(trackID: UUID, clipID: UUID, rates: [PlaybackRate], mutesAudio: Bool)
     case deriveSequence(name: String, width: Int, height: Int)
     case activateDerivedSequence(UUID)
     case addIndependentSequence(Sequence)
@@ -132,6 +188,9 @@ public indirect enum EditCommand {
     case crossDissolve(trackID: UUID, clipID: UUID, duration: MediaTime)
     /// Same overlap as `crossDissolve`, with a chosen kind (and side, for wipe/slide/push).
     case addTransition(trackID: UUID, clipID: UUID, kind: TransitionKind, direction: TransitionDirection, duration: MediaTime)
+    case updateTransition(trackID: UUID, kind: TransitionKind, direction: TransitionDirection, duration: MediaTime)
+    case changeTransitionAppearance(trackID: UUID, kind: TransitionKind, direction: TransitionDirection)
+    case removeTransition(trackID: UUID)
     case separateAudio(trackID: UUID, clipID: UUID, destinationTrackID: UUID? = nil)
     case insertClip(trackID: UUID, clip: Clip, at: MediaTime)
     case overwriteClip(trackID: UUID, clip: Clip, at: MediaTime)
@@ -149,44 +208,85 @@ public indirect enum EditCommand {
 
 public struct EditorHistory {
     public private(set) var project: Project
-    private var undoStack: [Project] = []
-    private var redoStack: [Project] = []
-    private let limit = 100
-    public var undoEstimatedBytes: Int { undoStack.reduce(0) { $0 + Self.estimatedBytes($1) } }
-    private static func estimatedBytes(_ project: Project) -> Int {
-        ([project.sequence] + (project.derivedSequences ?? [])).reduce(project.assets.count * 1024) { total, sequence in
-            total + sequence.tracks.reduce(0) { $0 + $1.clips.reduce(0) { $0 + 512 + ($1.title?.text.utf8.count ?? 0) + ($1.keyframes?.count ?? 0) * 112 + ($1.visual?.lut?.values.count ?? 0) * 4 } }
+    private struct Snapshot {
+        let project: Project
+        let logicalBytes: Int
+        init(_ project: Project) {
+            self.project = project; logicalBytes = HistoryMemoryCounter.standalone(project)
         }
     }
-    private mutating func trimHistory() {
-        var bytes = undoEstimatedBytes
-        while undoStack.count > 1 && (undoStack.count > limit || bytes > 64 * 1024 * 1024) {
-            bytes -= Self.estimatedBytes(undoStack.removeFirst())
-        }
-    }
+    private var undoStack: [Snapshot] = []
+    private var redoStack: [Snapshot] = []
+    public let budget: HistoryBudget
+    public private(set) var memoryUsage = HistoryMemoryUsage()
+    public var undoEstimatedBytes: Int { memoryUsage.undoLogicalBytes }
+    public var redoEstimatedBytes: Int { memoryUsage.redoLogicalBytes }
     public var canUndo: Bool { !undoStack.isEmpty }
     public var canRedo: Bool { !redoStack.isEmpty }
-    public init(project: Project) { self.project = project }
+    public init(project: Project, budget: HistoryBudget = HistoryBudget()) {
+        self.project = project
+        self.budget = HistoryBudget(snapshotLimit: budget.snapshotLimit, estimatedByteLimit: budget.estimatedByteLimit)
+        refreshMemoryUsage()
+    }
+    private mutating func refreshMemoryUsage() {
+        var counter = HistoryMemoryCounter(); counter.project(project)
+        let current = counter.bytes
+        for snapshot in undoStack { counter.project(snapshot.project) }
+        for snapshot in redoStack { counter.project(snapshot.project) }
+        memoryUsage.undoCount = undoStack.count; memoryUsage.redoCount = redoStack.count
+        memoryUsage.undoLogicalBytes = undoStack.reduce(0) { $0 + $1.logicalBytes }
+        memoryUsage.redoLogicalBytes = redoStack.reduce(0) { $0 + $1.logicalBytes }
+        memoryUsage.currentLogicalBytes = current
+        memoryUsage.retainedEstimatedBytes = counter.bytes - current
+    }
+    /// Drop the farthest states first. Following Undo, keep the nearest redo; following Redo,
+    /// keep the nearest undo. Even a single oversized old state may be discarded; current is never trimmed.
+    private mutating func trimHistory(preferUndo: Bool) {
+        refreshMemoryUsage()
+        while undoStack.count + redoStack.count > budget.snapshotLimit || memoryUsage.retainedEstimatedBytes > budget.estimatedByteLimit {
+            guard !undoStack.isEmpty || !redoStack.isEmpty else { break }
+            if preferUndo ? !redoStack.isEmpty : undoStack.isEmpty { redoStack.removeFirst() }
+            else { undoStack.removeFirst() }
+            memoryUsage.trimmedSnapshots += 1
+            refreshMemoryUsage()
+        }
+    }
+    /// Every document state Undo/Redo can still return to (not the current one). Read-only: used to decide
+    /// which generated media files are still referenced.
+    public var retainedProjects: [Project] { undoStack.map(\.project) + redoStack.map(\.project) }
+    /// Releases history references only, leaving the live document and external media untouched.
+    public mutating func clearHistory() {
+        undoStack.removeAll(keepingCapacity: false); redoStack.removeAll(keepingCapacity: false)
+        refreshMemoryUsage()
+    }
     public mutating func apply(_ command: EditCommand) throws {
         // A candidate copy guarantees rejection cannot partially mutate the live document or history.
         try ProjectValidator.validate(project)
         var candidate = project
+        try TransitionEditing.prepareTemporal(command, in: &candidate.sequence)
+        let temporalBefore = candidate.sequence
         try Self.execute(command, in: &candidate)
+        try TransitionEditing.reconcileRates(before: temporalBefore, after: &candidate.sequence)
         try ConnectionEditing.reconcile(before: project.sequence, after: &candidate.sequence)
+        try CaptionTranslationTracking.reconcile(before: project.sequence, after: &candidate.sequence)
+        try SpeakerEditing.reconcile(before: project.sequence, after: &candidate.sequence)
+        try TransitionEditing.refreshAudio(in: &candidate.sequence)
         try ProjectValidator.validate(candidate)
         guard candidate != project else { return }
-        undoStack.append(project)
-        trimHistory()
+        undoStack.append(Snapshot(project))
         project = candidate
-        redoStack.removeAll()
+        redoStack.removeAll(keepingCapacity: false)
+        trimHistory(preferUndo: true)
     }
     public mutating func undo() {
         guard let previous = undoStack.popLast() else { return }
-        redoStack.append(project); project = previous
+        redoStack.append(Snapshot(project)); project = previous.project
+        trimHistory(preferUndo: false)
     }
     public mutating func redo() {
         guard let next = redoStack.popLast() else { return }
-        undoStack.append(project); trimHistory(); project = next
+        undoStack.append(Snapshot(project)); project = next.project
+        trimHistory(preferUndo: true)
     }
     private static func trackIndex(_ id: UUID, in project: Project, allowLocked: Bool = false) throws -> Int {
         guard let index = project.sequence.tracks.firstIndex(where: { $0.id == id }) else { throw ProjectError("트랙을 찾을 수 없습니다.") }
@@ -200,33 +300,7 @@ public struct EditorHistory {
     /// The incoming clip moves `duration` earlier onto its own overlay track (so it overlaps the
     /// outgoing clip), everything after it moves up, and audio cross-fades over the same time.
     private static func addTransition(in project: inout Project, trackID: UUID, clipID: UUID, kind: TransitionKind, direction: TransitionDirection, duration: MediaTime) throws {
-        let ti = try trackIndex(trackID, in: project)
-        guard project.sequence.tracks[ti].kind == .video, duration > .zero else { throw ProjectError("메인 영상에서 전환 길이를 지정하세요.") }
-        let sorted = project.sequence.tracks[ti].clips.sorted { $0.start < $1.start }
-        let index = try clipIndex(clipID, in: Track(name: "", kind: .video, clips: sorted))
-        guard sorted.indices.contains(index + 1) else { throw ProjectError("다음 영상 클립이 있어야 합니다.") }
-        let left = sorted[index]; var right = sorted[index + 1]
-        guard left.end == right.start, duration < min(left.duration, right.duration) else { throw ProjectError("서로 붙어 있는 두 클립보다 짧은 전환을 선택하세요.") }
-        right.start = try right.start.subtracting(duration); right.audioFadeIn = duration
-        right.transition = ClipTransition(kind: kind, direction: direction, duration: duration)
-        // Dissolve is the fade-in itself; the other kinds draw their own motion and must not also fade.
-        right.fadeIn = kind == .dissolve ? duration : nil
-        project.sequence.tracks[ti].clips.removeAll { $0.id == right.id }
-        let leftIndex = try clipIndex(left.id, in: project.sequence.tracks[ti])
-        project.sequence.tracks[ti].clips[leftIndex].audioFadeOut = duration
-        try shiftFollowing(in: &project.sequence.tracks[ti], startingAt: sorted[index + 1].end, by: .zero.subtracting(duration), excluding: left.id)
-        for t in project.sequence.tracks.indices {
-            for c in project.sequence.tracks[t].clips.indices {
-                let child = project.sequence.tracks[t].clips[c]
-                if child.title == nil, let parent = child.connection?.parentID, parent == left.id || parent == right.id {
-                    guard !project.sequence.tracks[t].isLocked else { throw ProjectError("전환에 연결된 오디오 트랙을 잠금 해제하세요.") }
-                    if parent == left.id { project.sequence.tracks[t].clips[c].audioFadeOut = min(duration, child.duration) }
-                    else { project.sequence.tracks[t].clips[c].audioFadeIn = min(duration, child.duration) }
-                }
-            }
-        }
-        let transition = Track(name: kind.label + " · " + right.name, kind: .overlay, clips: [right])
-        project.sequence.tracks.insert(transition, at: ti + 1)
+        try TransitionEditing.add(in: &project.sequence, trackID: trackID, clipID: clipID, effect: ClipTransition(kind: kind, direction: direction, duration: duration))
     }
 
     private static func execute(_ command: EditCommand, in project: inout Project) throws {
@@ -253,13 +327,26 @@ public struct EditorHistory {
             let original = project.sequence
             var derived = original; derived.id = UUID(); derived.name = name; derived.width = width; derived.height = height
             let idMap = Dictionary(uniqueKeysWithValues: derived.tracks.flatMap(\.clips).map { ($0.id, UUID()) })
+            let captionGroups = Set(derived.tracks.flatMap(\.clips).compactMap(\.captionGroupID))
+            let captionGroupMap = Dictionary(uniqueKeysWithValues: captionGroups.map { ($0, idMap[$0] ?? UUID()) })
+            let trackMap = Dictionary(uniqueKeysWithValues: derived.tracks.map { ($0.id, UUID()) })
+            let families = Set(derived.tracks.flatMap(\.clips).map(TransitionEditing.family))
+            let familyMap = Dictionary(uniqueKeysWithValues: families.map { ($0, idMap[$0] ?? UUID()) })
             for ti in derived.tracks.indices {
-                derived.tracks[ti].id = UUID()
+                derived.tracks[ti].id = trackMap[derived.tracks[ti].id]!
+                if var context = derived.tracks[ti].transitionContext {
+                    context.originTrackID = trackMap[context.originTrackID]!
+                    context.outgoingFamilyID = familyMap[context.outgoingFamilyID]!
+                    derived.tracks[ti].transitionContext = context
+                }
                 for ci in derived.tracks[ti].clips.indices {
                     let old = derived.tracks[ti].clips[ci]
                     derived.tracks[ti].clips[ci].id = idMap[old.id]!
-                    derived.tracks[ti].clips[ci].lineageID = nil
-                    if let source = old.captionMetadata?.translatedFrom { derived.tracks[ti].clips[ci].captionMetadata?.translatedFrom = idMap[source] ?? source }
+                    derived.tracks[ti].clips[ci].lineageID = old.lineageID.map { familyMap[$0]! }
+                    derived.tracks[ti].clips[ci].transitionAudioFades = old.transitionAudioFades?.map { var fade = $0; fade.ownerID = trackMap[fade.ownerID] ?? fade.ownerID; return fade }
+                    derived.tracks[ti].clips[ci].captionGroupID = old.captionGroupID.map { captionGroupMap[$0]! }
+                    if let source = old.captionMetadata?.translatedFrom { derived.tracks[ti].clips[ci].captionMetadata?.translatedFrom = idMap[source] ?? familyMap[source] ?? source }
+                    if let source = old.captionMetadata?.translationRevision?.sourceCaptionID { derived.tracks[ti].clips[ci].captionMetadata?.translationRevision?.sourceCaptionID = idMap[source] ?? familyMap[source] ?? source }
                     if let parent = old.connection?.parentID { derived.tracks[ti].clips[ci].connection?.parentID = idMap[parent] ?? parent }
                     if let title = old.title { derived.tracks[ti].clips[ci].title = TitleSizing.resized(title, from: min(original.width, original.height), to: min(width, height)) }
                 }
@@ -278,13 +365,32 @@ public struct EditorHistory {
             let ci = try clipIndex(clipID, in: project.sequence.tracks[ti])
             let original = project.sequence.tracks[ti].clips[ci]
             var duplicate = original; duplicate.id = UUID(); duplicate.lineageID = nil; duplicate.connection = nil; duplicate.name += " 복사"; duplicate.start = try original.start.adding(original.duration)
+            if CaptionQuery.role(of: original) == .original { duplicate.captionRole = .original; duplicate.captionGroupID = UUID() }
+            let allDependents = project.sequence.tracks.flatMap(\.clips).filter { $0.connection?.parentID == original.id }
+            let childIDs = Dictionary(uniqueKeysWithValues: allDependents.map { ($0.id, UUID()) })
             try shiftFollowing(in: &project.sequence.tracks[ti], startingAt: duplicate.start, by: original.duration, excluding: original.id)
             project.sequence.tracks[ti].clips.insert(duplicate, at: ci + 1)
             for trackIndex in project.sequence.tracks.indices {
                 let dependents = project.sequence.tracks[trackIndex].clips.filter { $0.connection?.parentID == original.id }
                 if !dependents.isEmpty, project.sequence.tracks[trackIndex].isLocked { throw ProjectError("연결된 트랙의 잠금을 먼저 해제하세요.") }
                 for child in dependents {
-                    var copy = child; copy.id = UUID(); copy.lineageID = nil; copy.connection?.parentID = duplicate.id
+                    var copy = child; copy.id = childIDs[child.id]!; copy.lineageID = nil; copy.connection?.parentID = duplicate.id
+                    if CaptionQuery.role(of: child) == .original || CaptionQuery.role(of: child) == .translation { copy.captionGroupID = duplicate.id }
+                    if let from = child.captionMetadata?.translatedFrom {
+                        // A source split leaves the right original with a lineage root rather than the
+                        // left original's id. Bind the duplicated translation to its copied interval.
+                        let sourceCaptions = allDependents.filter { CaptionQuery.role(of: $0) == .original }
+                        func sameInterval(_ candidate: Clip) -> Bool {
+                            candidate.connection?.sourceStart == child.connection?.sourceStart && candidate.connection?.sourceDuration == child.connection?.sourceDuration
+                        }
+                        // Exact identity wins even if an overlapping family fragment appears first.
+                        let exact = sourceCaptions.first { $0.id == from && (child.captionMetadata?.translationRevision != nil || sameInterval($0)) }
+                        let legacy = sourceCaptions.filter { $0.lineageID == from && sameInterval($0) }
+                        guard exact != nil || legacy.count <= 1 else { throw ProjectError("같은 구간의 원문 연결이 모호해 영상을 복사하지 않았습니다. 번역의 원문을 확인하세요.") }
+                        let matchingOriginal = exact ?? legacy.first
+                        copy.captionMetadata?.translatedFrom = matchingOriginal.flatMap { childIDs[$0.id] } ?? childIDs[from] ?? from
+                        if copy.captionMetadata?.translationRevision != nil, let bound = copy.captionMetadata?.translatedFrom { copy.captionMetadata?.translationRevision?.sourceCaptionID = bound }
+                    }
                     copy.start = try copy.start.adding(original.duration)
                     project.sequence.tracks[trackIndex].clips.append(copy)
                 }
@@ -298,13 +404,50 @@ public struct EditorHistory {
             let oldRate = clip.playbackRate ?? PlaybackRate(), oldDuration = clip.duration
             let oldEnd = try clip.start.adding(oldDuration)
             func remap(_ time: MediaTime) throws -> MediaTime { try time.scaled(numerator: oldRate.numerator, denominator: oldRate.denominator).scaled(numerator: rate.denominator, denominator: rate.numerator) }
-            clip.duration = try remap(oldDuration); clip.playbackRate = rate
-            clip.fadeIn = try clip.fadeIn.map(remap); clip.fadeOut = try clip.fadeOut.map(remap)
-            clip.audioFadeIn = try clip.audioFadeIn.map(remap); clip.audioFadeOut = try clip.audioFadeOut.map(remap)
-            clip.ducking = try clip.ducking?.map { var point = $0; point.time = try remap(point.time); return point }
-            clip.keyframes = try clip.keyframes?.map { original in var frame = original; frame.time = try remap(frame.time); return frame }
+            clip = try ClipTemporalEditor.retimed(clip, duration: remap(oldDuration), mapping: remap); clip.playbackRate = rate
             project.sequence.tracks[ti].clips[ci] = clip
             try shiftFollowing(in: &project.sequence.tracks[ti], startingAt: oldEnd, by: clip.duration.subtracting(oldDuration), excluding: clipID)
+        case .speedRamp(let trackID, let clipID, let rates, let mutesAudio):
+            guard SpeedRampPlan.allowedPieces.contains(rates.count) else { throw ProjectError("속도 램프는 \(SpeedRampPlan.allowedPieces.lowerBound)~\(SpeedRampPlan.allowedPieces.upperBound)조각으로 만듭니다.") }
+            let ti = try trackIndex(trackID, in: project)
+            let original = project.sequence.tracks[ti].clips[try clipIndex(clipID, in: project.sequence.tracks[ti])]
+            guard original.title == nil else { throw ProjectError("속도 램프는 영상 또는 오디오 클립에 적용하세요.") }
+            guard original.duration.seconds / Double(rates.count) >= SpeedRampPlan.minimumPieceSeconds else { throw ProjectError("클립이 짧아 이 조각 수로 나눌 수 없습니다. 조각 수를 줄이세요.") }
+            // Connected audio would keep its own speed; refuse instead of letting picture and sound drift apart.
+            guard !project.sequence.tracks.flatMap(\.clips).contains(where: { $0.connection?.parentID == original.id && $0.title == nil }) else {
+                throw ProjectError("분리된 오디오가 연결돼 있어 속도 램프를 만들 수 없습니다. 오디오 연결을 해제하거나 삭제한 뒤 다시 시도하세요.")
+            }
+            let n = rates.count
+            let unrelated = project.sequence.tracks[ti].clips.filter { $0.id != original.id }
+            var pieceIDs = [original.id]
+            var current = original.id
+            for i in 1..<n {
+                let at = try original.start.adding(try original.duration.scaled(numerator: Int32(i), denominator: Int32(n)))
+                let existingIDs = Set(project.sequence.tracks[ti].clips.map(\.id))
+                try execute(.split(trackID: trackID, clipID: current, at: at), in: &project)
+                let created = project.sequence.tracks[ti].clips.filter { !existingIDs.contains($0.id) }
+                guard created.count == 1, let next = created.first else { throw ProjectError("속도 램프를 나누지 못했습니다.") }
+                current = next.id
+                pieceIDs.append(current)
+            }
+            for (id, rate) in zip(pieceIDs, rates) { try execute(.setRate(trackID: trackID, clipID: id, rate: rate), in: &project) }
+            // setRate ripples after each piece. Overlapping, unrelated clips must not be
+            // swept into that ripple; only clips following the original range move.
+            let newEnd = project.sequence.tracks[ti].clips[try clipIndex(current, in: project.sequence.tracks[ti])].end
+            let delta = try newEnd.subtracting(original.end)
+            for var other in unrelated {
+                if other.start >= original.end { other.start = try other.start.adding(delta) }
+                project.sequence.tracks[ti].clips[try clipIndex(other.id, in: project.sequence.tracks[ti])] = other
+            }
+            if mutesAudio {
+                for id in pieceIDs {
+                    let index = try clipIndex(id, in: project.sequence.tracks[ti])
+                    project.sequence.tracks[ti].clips[index].volume = 0
+                    project.sequence.tracks[ti].clips[index].keyframes = project.sequence.tracks[ti].clips[index].keyframes?.map {
+                        var frame = $0; frame.volume = 0; return frame
+                    }
+                }
+            }
         case .rename(let name): project.name = name
         case .replaceGlossary(let entries):
             for entry in entries where entry.source.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty { throw ProjectError("용어집 원문은 비워 둘 수 없습니다.") }
@@ -338,6 +481,12 @@ public struct EditorHistory {
             try addTransition(in: &project, trackID: trackID, clipID: clipID, kind: .dissolve, direction: .fromRight, duration: duration)
         case .addTransition(let trackID, let clipID, let kind, let direction, let duration):
             try addTransition(in: &project, trackID: trackID, clipID: clipID, kind: kind, direction: direction, duration: duration)
+        case .updateTransition(let trackID, let kind, let direction, let duration):
+            try TransitionEditing.update(in: &project.sequence, trackID: trackID, effect: ClipTransition(kind: kind, direction: direction, duration: duration))
+        case .changeTransitionAppearance(let trackID, let kind, let direction):
+            try TransitionEditing.changeAppearance(in: &project.sequence, trackID: trackID, kind: kind, direction: direction)
+        case .removeTransition(let trackID):
+            try TransitionEditing.update(in: &project.sequence, trackID: trackID, effect: nil)
         case .separateAudio(let trackID, let clipID, let destinationTrackID):
             let ti = try trackIndex(trackID, in: project)
             let ci = try clipIndex(clipID, in: project.sequence.tracks[ti])
@@ -351,7 +500,7 @@ public struct EditorHistory {
             let destination = project.sequence.tracks[audioIndex]
             guard destination.kind == .audio, !destination.isMuted, !destination.isHidden else { throw ProjectError("분리할 오디오는 재생 가능한 오디오 트랙에 배치하세요.") }
             guard !project.sequence.tracks.flatMap(\.clips).contains(where: { $0.connection?.parentID == original.id && $0.title == nil }) else { throw ProjectError("이미 분리된 연결 오디오가 있습니다. 기존 오디오를 편집하세요.") }
-            var audio = original; audio.id = UUID(); audio.lineageID = nil
+            var audio = original; audio.id = UUID(); audio.lineageID = nil; audio.blendMode = nil
             audio.connection = ClipConnection(parentID: original.id, sourceStart: original.sourceStart, sourceDuration: original.sourceDuration)
              audio.name += " · 분리 오디오"; audio.transform = ClipTransform(); audio.visual = nil; audio.fadeIn = nil; audio.fadeOut = nil
             audio.keyframes = original.keyframes?.map { frame in var copy = frame; copy.transform = ClipTransform(); return copy }

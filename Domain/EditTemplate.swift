@@ -12,6 +12,7 @@ public enum EditTemplate {
             guard let preset = TitlePreset.builtIns.first(where: { $0.id == id }) else { continue }
             let title = TitleSizing.title(for: preset, width: sequence.width, height: sequence.height)
             var clip = Clip(name: preset.name, start: MediaTime(seconds: starts[index]), duration: MediaTime(seconds: length), title: title)
+            clip.captionRole = .title
             clip.fadeIn = MediaTime(seconds:0.25); clip.fadeOut=MediaTime(seconds:0.25)
             clip.keyframes=[TransformKeyframe(time:.zero,transform:ClipTransform(y:-Double(sequence.height)*0.015)),TransformKeyframe(time:MediaTime(seconds:0.35),transform:ClipTransform())]
             clips.append(clip)

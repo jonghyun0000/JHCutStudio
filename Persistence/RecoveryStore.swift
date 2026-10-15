@@ -20,7 +20,7 @@ public struct RecoveryStore {
     public init(directory: URL? = nil) {
         self.directory = directory ?? FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0].appendingPathComponent("JHCutStudio/Recovery", isDirectory: true)
     }
-    public func save(project: Project, documentURL: URL?, mediaBaseURL: URL?) throws {
+    public func save(project: Project, documentURL: URL?, mediaBaseURL: URL?, phaseHandler: ((RecoverySavePhase) throws -> Void)? = nil) throws {
         try ProjectValidator.validate(project)
         let snapshot = RecoverySnapshot(project: project, documentURL: documentURL, mediaBaseURL: mediaBaseURL)
         let encoder = JSONEncoder(); encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
@@ -41,10 +41,12 @@ public struct RecoveryStore {
                 if decoded.project.id != project.id {
                     try archive(previous, snapshot: decoded)
                 }
-                try previous.write(to: backupURL, options: .atomic)
+                try DocumentAtomicWrite.replace(previous, at: backupURL) { try phaseHandler?(.previousStaged) }
+                try phaseHandler?(.previousCommitted)
             }
         }
-        try bytes.write(to: snapshotURL, options: .atomic)
+        try DocumentAtomicWrite.replace(bytes, at: snapshotURL) { try phaseHandler?(.currentStaged) }
+        try phaseHandler?(.currentCommitted)
     }
     public func load() throws -> RecoverySnapshot? {
         guard FileManager.default.fileExists(atPath: snapshotURL.path) else { return nil }
@@ -72,6 +74,11 @@ public struct RecoveryStore {
         if newest.isEmpty, failed { throw ProjectError("저장된 복구본이 손상되어 읽을 수 없습니다.") }
         return newest.values.sorted { $0.savedAt > $1.savedAt }
     }
+    /// Cleanup must retain every generation, even when the recovery picker deduplicates
+    /// by project. Any unreadable generation makes an unreferenced decision unsafe.
+    public func allSnapshotsForMediaRetention() throws -> [RecoverySnapshot] {
+        try snapshotURLs().map { try read($0) }
+    }
     public func clear(projectID: UUID) throws {
         for url in try snapshotURLs() {
             if let snapshot = try? read(url), snapshot.project.id == projectID {
@@ -94,7 +101,7 @@ public struct RecoveryStore {
         let url = archiveDirectory.appendingPathComponent(snapshot.project.id.uuidString + ".json")
         // Preserve a newer retained snapshot if clocks changed or a stale slot was restored.
         if let archived = try? read(url), archived.savedAt > snapshot.savedAt { return }
-        try bytes.write(to: url, options: .atomic)
+        try DocumentAtomicWrite.replace(bytes, at: url)
     }
     private func read(_ url: URL) throws -> RecoverySnapshot {
         let bytes = try Data(contentsOf: url)

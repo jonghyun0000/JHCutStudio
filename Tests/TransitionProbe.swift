@@ -41,8 +41,8 @@ import AppKit
 
  static func main() async throws {
   setbuf(stdout, nil)
-  let root = URL(fileURLWithPath: CommandLine.arguments.dropFirst().first ?? "Artifacts/Upgrade-0.7/Transitions", isDirectory: true).standardizedFileURL
-  try? FileManager.default.removeItem(at: root); try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+  let root = try ProbeWorkspace.prepare(defaultPath: "Artifacts/Upgrade-0.7/Transitions")
+  try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
   var rows: [[String: Any]] = [], metrics: [String: Any] = [:]
   func check(_ name: String, _ passed: Bool, _ detail: String = "") { rows.append(["name": name, "passed": passed, "detail": detail]); print("\(passed ? "PASS" : "FAIL") \(name) \(detail)") }
   defer { try? JSONSerialization.data(withJSONObject: ["checks": rows, "metrics": metrics], options: [.prettyPrinted, .sortedKeys]).write(to: root.appendingPathComponent("checks.json")) }
@@ -83,7 +83,14 @@ import AppKit
   let dis = try await mid(.dissolve, .fromRight); let cd = dis.rgb(320, 180), ca = aOnly.rgb(320, 180)
   check("Dissolve: halfway is the linear-light average of both pictures", abs(Double(cd.0) - srgb((lin(ca.0) + lin(0)) / 2)) < 6 && abs(Double(cd.2) - srgb((lin(ca.2) + lin(220)) / 2)) < 6, "\(cd) from A \(ca) and B (0,0,220)")
   // Legacy dissolve (0.6 documents: fade-in only, no `transition`) renders exactly the same.
-  var legacy = try project(.dissolve); for t in legacy.sequence.tracks.indices { for c in legacy.sequence.tracks[t].clips.indices { legacy.sequence.tracks[t].clips[c].transition = nil } }
+  var legacy = try project(.dissolve)
+  for t in legacy.sequence.tracks.indices {
+   legacy.sequence.tracks[t].transitionContext = nil
+   for c in legacy.sequence.tracks[t].clips.indices {
+    if legacy.sequence.tracks[t].clips[c].name == "B" { legacy.sequence.tracks[t].clips[c].fadeIn = MediaTime(seconds: 1) }
+    legacy.sequence.tracks[t].clips[c].transition = nil; legacy.sequence.tracks[t].clips[c].transitionAudioFades = nil
+   }
+  }
   let legacyFrame = try await frames(legacy, [1.5])[0]
   check("0.6-style dissolve (fade-in only) renders identically", legacyFrame.maxDifference(dis) <= 1, "difference \(legacyFrame.maxDifference(dis))")
   // Dip to black
@@ -121,7 +128,7 @@ import AppKit
   var history = EditorHistory(project: base)
   try history.apply(.addTransition(trackID: track.id, clipID: track.clips[0].id, kind: .push, direction: .fromLeft, duration: MediaTime(seconds: 0.8)))
   let incoming = history.project.sequence.tracks.flatMap(\.clips).first { $0.name == "B" }!
-  check("Transition is stored on the incoming clip with the overlap", incoming.transition == ClipTransition(kind: .push, direction: .fromLeft, duration: MediaTime(seconds: 0.8)) && incoming.start == MediaTime(seconds: 1.2) && incoming.fadeIn == nil && incoming.audioFadeIn == MediaTime(seconds: 0.8))
+  check("Transition stores its overlap separately from native audio fades", incoming.transition == ClipTransition(kind: .push, direction: .fromLeft, duration: MediaTime(seconds: 0.8)) && incoming.start == MediaTime(seconds: 1.2) && incoming.fadeIn == nil && incoming.audioFadeIn == nil && incoming.transitionAudioFades?.first?.duration == MediaTime(seconds: 0.8))
   check("Overlay track is named after the transition", history.project.sequence.tracks.contains { $0.kind == .overlay && $0.name.hasPrefix("밀어내기") })
   check("Timeline is shortened by the overlap", history.project.sequence.duration == MediaTime(seconds: 3.2))
   history.undo(); check("One undo removes the transition", history.project == base)
@@ -187,6 +194,169 @@ import AppKit
   var animated = undoHistory.project.sequence.tracks[2].clips[0]; animated.titleAnimation = TitleAnimation(inKind: .zoom)
   try undoHistory.apply(.updateClip(trackID: tid, clip: animated)); undoHistory.undo()
   check("Setting the animation is one undo step", undoHistory.project.sequence.tracks[2].clips[0].titleAnimation == nil)
+  // ---- Temporal edits preserve the original effect clock, measured on actual rendered pixels ----
+  let samples = [0.25, 1.0, 1.2, 1.5, 1.8, 2.2, 2.75]
+  for kind in TransitionKind.allCases {
+   let original = try project(kind); let expected = try await frames(original, samples)
+   var h = EditorHistory(project: original)
+   for name in ["A", "B"] {
+    for time in name == "A" ? [0.5, 1.6] : [1.4, 2.4] {
+     let track = h.project.sequence.tracks.first { $0.clips.contains { $0.name == name && $0.start.seconds < time && $0.end.seconds > time } }!
+     let clip = track.clips.first { $0.name == name && $0.start.seconds < time && $0.end.seconds > time }!
+     try h.apply(.split(trackID: track.id, clipID: clip.id, at: MediaTime(seconds: time)))
+    }
+   }
+   let actual = try await frames(h.project, samples), error = zip(expected, actual).map { $0.maxDifference($1) }.max()!
+   check("\(kind.label): splits before/during/after the transition preserve pixels", error <= 2, "max RGB difference \(error)")
+   let track = h.project.sequence.tracks.first { $0.transitionContext != nil }!
+   check("\(kind.label): late fragments do not replay the entrance", track.clips.last?.transition == nil && track.transitionContext != nil)
+   let saved = root.appendingPathComponent("Split-\(kind.rawValue).jhcut"); try ProjectStore.save(h.project, to: saved)
+   let loaded = try ProjectStore.load(from: saved)
+   check("\(kind.label): split effect save/reopen", loaded.sequence == h.project.sequence)
+   while h.canUndo { h.undo() }; check("\(kind.label): split undo restores original", h.project == original)
+  }
+  var trimmedHistory = EditorHistory(project: try project(.push))
+  let trimTrack = trimmedHistory.project.sequence.tracks.first { $0.transitionContext != nil }!, trimClip = trimTrack.clips[0]
+  let retainedTimes = [1.3, 1.5, 1.9, 2.3, 2.75]
+  let retainedExpected = try await frames(trimmedHistory.project, retainedTimes)
+  try trimmedHistory.apply(.trimClip(trackID: trimTrack.id, clipID: trimClip.id, newStart: MediaTime(seconds: 1.25), newSourceStart: .zero, newDuration: MediaTime(seconds: 1.75)))
+  let retainedActual = try await frames(trimmedHistory.project, retainedTimes)
+  check("Head trim preserves transition phase and retained pixels", zip(retainedExpected, retainedActual).allSatisfy { $0.maxDifference($1) <= 2 })
+  try trimmedHistory.apply(.changeTransitionAppearance(trackID: trimTrack.id, kind: .wipe, direction: .fromLeft))
+  let phaseClip = trimmedHistory.project.sequence.tracks.first { $0.id == trimTrack.id }!.clips[0]
+  check("Changing kind after trim preserves phase and placement", phaseClip.start == MediaTime(seconds: 1.25) && phaseClip.transition?.offset == MediaTime(seconds: 0.25) && phaseClip.transition?.duration == MediaTime(seconds: 1))
+  for kind in TitleAnimationKind.allCases {
+   let original = titleProject(TitleAnimation(inKind: kind, outKind: .fade, inSeconds: 1, outSeconds: 0.5))
+   let times = [0.2, 0.4, 0.6, 1.5, 2.6, 2.8], expected = try await frames(original, times)
+   var h = EditorHistory(project: original)
+   for t in [0.4, 2.7] {
+    let track = h.project.sequence.tracks.first { $0.kind == .title }!, clip = track.clips.first { $0.start.seconds < t && $0.end.seconds > t }!
+    try h.apply(.split(trackID: track.id, clipID: clip.id, at: MediaTime(seconds: t)))
+   }
+   let actual = try await frames(h.project, times), error = zip(expected, actual).map { $0.maxDifference($1) }.max()!
+   check("Title \(kind.label): split preserves entrance and exit pixels", error <= 2, "max RGB difference \(error)")
+   var tr = EditorHistory(project: original); let track = original.sequence.tracks.first { $0.kind == .title }!
+   try tr.apply(.trimClip(trackID: track.id, clipID: track.clips[0].id, newStart: MediaTime(seconds: 0.4), newSourceStart: .zero, newDuration: MediaTime(seconds: 2.6)))
+   let actualTrim = try await frames(tr.project, Array(times.dropFirst()))
+   check("Title \(kind.label): trim keeps original clock", zip(expected.dropFirst(), actualTrim).allSatisfy { $0.maxDifference($1) <= 2 })
+   let saved = root.appendingPathComponent("Title-split-\(kind.rawValue).jhcut"); try ProjectStore.save(h.project, to: saved)
+   check("Title \(kind.label): temporal fields survive save", try ProjectStore.load(from: saved).sequence == h.project.sequence)
+  }
+  // An ordinary overlay between A and B stays above their composed pair, rather than being pushed away.
+  let greenURL = root.appendingPathComponent("logo.png"); try png(greenURL) { _, _ in (0, 230, 0) }
+  let greenAsset = try await MediaImporter.inspect(url: greenURL)
+  var decorated = try project(.push); decorated.assets.append(greenAsset)
+  var logo = Clip(name: "Logo", assetID: greenAsset.id, duration: MediaTime(seconds: 3)); logo.transform.scale = 0.12
+  let decoration = Track(name: "Decoration", kind: .overlay, clips: [logo])
+  decorated.sequence.tracks.insert(decoration, at: 1)
+  let logoFrames = try await frames(decorated, [0.5, 1.25, 1.5, 1.75, 2.5])
+  func greenPixels(_ frame: Frame) -> Set<Int> {
+   Set(stride(from: 0, to: frame.px.count, by: 4).filter { i in frame.px[i + 1] > 150 && frame.px[i] < 40 && frame.px[i + 2] < 40 })
+  }
+  let logoMask = greenPixels(logoFrames[0])
+  check("Push leaves an unrelated decorative overlay fixed", !logoMask.isEmpty && logoFrames.allSatisfy { greenPixels($0) == logoMask }, "logo pixels \(logoMask.count)")
+  var oldTrim = EditorHistory(project: legacy)
+  let oldIncomingTrack = legacy.sequence.tracks.first { $0.kind == .overlay && !$0.clips.isEmpty }!
+  try oldTrim.apply(.split(trackID: oldIncomingTrack.id, clipID: oldIncomingTrack.clips[0].id, at: MediaTime(seconds: 1.4)))
+  let oldFrame = try await frames(oldTrim.project, [1.5])[0]
+  check("Legacy dissolve split adopts the pair without changing pixels", oldFrame.maxDifference(dis) <= 2 && oldTrim.project.sequence.tracks.first { $0.id == oldIncomingTrack.id }?.transitionContext != nil)
+  oldTrim.undo(); check("Legacy split undo restores the exact old representation", oldTrim.project == legacy)
+
+  // Actual video assets enable speed edits; a connected animated caption follows B's source clock.
+  let videoAURL = root.appendingPathComponent("speed-A.mp4"), videoBURL = root.appendingPathComponent("speed-B.mp4")
+  var sourceA = try project(nil); sourceA.sequence.tracks[0].clips = [sourceA.sequence.tracks[0].clips[0]]
+  var sourceB = try project(nil); var onlyB = sourceB.sequence.tracks[0].clips[1]; onlyB.start = .zero; sourceB.sequence.tracks[0].clips = [onlyB]
+  try await ExportJob().export(plan: TimelineRenderer.build(project: sourceA), to: videoAURL) { _ in }
+  try await ExportJob().export(plan: TimelineRenderer.build(project: sourceB), to: videoBURL) { _ in }
+  let videoA = try await MediaImporter.inspect(url: videoAURL), videoB = try await MediaImporter.inspect(url: videoBURL)
+  var speedBase = try project(nil); speedBase.assets = [videoA, videoB]
+  speedBase.sequence.tracks[0].clips[0].assetID = videoA.id; speedBase.sequence.tracks[0].clips[1].assetID = videoB.id
+  let sceneB = speedBase.sequence.tracks[0].clips[1]
+  speedBase.sequence.tracks[0].clips.append(Clip(name: "C", assetID: videoA.id, start: MediaTime(seconds: 4), duration: MediaTime(seconds: 2)))
+  var caption = titleProject(nil).sequence.tracks[2].clips[0]; caption.duration = MediaTime(seconds: 0.8); caption.start = MediaTime(seconds: 2.5)
+  caption.connection = ClipConnection(parentID: sceneB.id, sourceStart: MediaTime(seconds: 0.5), sourceDuration: MediaTime(seconds: 0.8))
+  caption.titleAnimation = TitleAnimation(inKind: .typewriter, outKind: .fade, inSeconds: 0.4, outSeconds: 0.2)
+  speedBase.sequence.tracks[2].clips = [caption]
+  var speed = EditorHistory(project: speedBase); let main = speedBase.sequence.tracks[0]
+  try speed.apply(.addTransition(trackID: main.id, clipID: main.clips[0].id, kind: .push, direction: .fromRight, duration: MediaTime(seconds: 0.5)))
+  let speedTrack = speed.project.sequence.tracks.first { $0.clips.contains { $0.id == sceneB.id } }!
+  try speed.apply(.addTransition(trackID: speedTrack.id, clipID: sceneB.id, kind: .wipe, direction: .fromLeft, duration: MediaTime(seconds: 0.5)))
+  let speedOriginal = speed.project, expectedCaptionPixel = try await frames(speedOriginal, [2.2])[0]
+  try speed.apply(.setRate(trackID: speedTrack.id, clipID: sceneB.id, rate: PlaybackRate(numerator: 2)))
+  let retimedB = speed.project.sequence.tracks.flatMap(\.clips).first { $0.id == sceneB.id }!, retimedCaption = speed.project.sequence.tracks.flatMap(\.clips).first { $0.connection?.parentID == sceneB.id && $0.title != nil }!
+  check("2x middle scene keeps both transition windows aligned", retimedB.start == MediaTime(seconds: 1.75) && retimedB.end == MediaTime(seconds: 2.75) && speed.project.sequence.tracks.flatMap(\.clips).first { $0.name == "C" }?.start == MediaTime(seconds: 2.25))
+  check("Connected caption animation follows source speed", retimedCaption.start == MediaTime(seconds: 2) && retimedCaption.duration == MediaTime(seconds: 0.4) && retimedCaption.titleAnimation?.timeScale == 2)
+  let captionPixel = try await frames(speed.project, [2.1])[0]
+  check("2x connected animated caption matches the same source instant in pixels", captionPixel.maxDifference(expectedCaptionPixel) <= 3, "difference \(captionPixel.maxDifference(expectedCaptionPixel))")
+  speed.undo(); check("Speed with transitions and caption is one undo step", speed.project == speedOriginal)
+  try speed.apply(.setRate(trackID: speedTrack.id, clipID: sceneB.id, rate: PlaybackRate(numerator: 4)))
+  let fastC = speed.project.sequence.tracks.first { $0.clips.contains { $0.name == "C" } }!
+  check("4x middle scene shortens the next transition to prevent a three-way overlap", fastC.clips[0].start == MediaTime(seconds: 2) && fastC.transitionContext?.effect.duration == MediaTime(seconds: 0.375))
+  let gapFrames = try await frames(speed.project, [1.9, 2.0, 2.2, 2.4, 3.0])
+  check("Retimed chain has no black gap at either boundary", gapFrames.allSatisfy { frame in stride(from: 0, to: frame.px.count, by: 4).contains { max(frame.px[$0], frame.px[$0 + 1], frame.px[$0 + 2]) > 100 } })
+  let speedDoc = root.appendingPathComponent("Retimed-chain.jhcut"); try ProjectStore.save(speed.project, to: speedDoc)
+  check("Retimed transition and caption clocks survive save/reopen", try ProjectStore.load(from: speedDoc).sequence == speed.project.sequence)
+  try speed.apply(.deriveSequence(name: "Vertical", width: 360, height: 640))
+  check("Derived sequence remaps transition scene and owner identities", (try? ProjectValidator.validate(speed.project)) != nil && speed.project.sequence.tracks.compactMap(\.transitionContext).allSatisfy { $0.originTrackID == speed.project.sequence.tracks[0].id })
+
+  // A phase-aligned tone makes equal-power errors and doubled native fades audible/measurable.
+  let toneURL = root.appendingPathComponent("tone.wav")
+  let format = AVAudioFormat(commonFormat: .pcmFormatFloat32, sampleRate: 48_000, channels: 1, interleaved: false)!
+  try autoreleasepool {
+   let toneFile = try AVAudioFile(forWriting: toneURL, settings: [AVFormatIDKey: kAudioFormatLinearPCM, AVSampleRateKey: 48_000, AVNumberOfChannelsKey: 1, AVLinearPCMBitDepthKey: 16, AVLinearPCMIsFloatKey: false], commonFormat: .pcmFormatFloat32, interleaved: false)
+   let buffer = AVAudioPCMBuffer(pcmFormat: format, frameCapacity: 96_000)!; buffer.frameLength = 96_000
+   for i in 0..<96_000 { buffer.floatChannelData![0][i] = 0.2 * Float(sin(Double(i) * 2 * .pi * 440 / 48_000)) }
+   try toneFile.write(from: buffer)
+  }
+  let toneAsset = try await MediaImporter.inspect(url: toneURL)
+  var audioBase = try project(nil); audioBase.assets.append(toneAsset)
+  for parent in audioBase.sequence.tracks[0].clips {
+   var child = Clip(name: "Tone-\(parent.name)", assetID: toneAsset.id, start: parent.start, duration: parent.duration)
+   child.connection = ClipConnection(parentID: parent.id, sourceStart: .zero, sourceDuration: parent.duration)
+   child.audioFadeIn = MediaTime(seconds: 0.2); child.audioFadeOut = MediaTime(seconds: 0.3)
+   audioBase.sequence.tracks[3].clips.append(child)
+  }
+  var audio = EditorHistory(project: audioBase)
+  try audio.apply(.addTransition(trackID: audioBase.sequence.tracks[0].id, clipID: audioBase.sequence.tracks[0].clips[0].id, kind: .dissolve, direction: .fromRight, duration: MediaTime(seconds: 1)))
+  check("Connected sound keeps native fades while adding managed crossfade", audio.project.sequence.tracks[4].clips.allSatisfy { $0.audioFadeIn == MediaTime(seconds: 0.2) && $0.audioFadeOut == MediaTime(seconds: 0.3) && $0.transitionAudioFades?.count == 1 })
+  let toneOutput = root.appendingPathComponent("transition-tone.mp4")
+  try await ExportJob().export(plan: TimelineRenderer.build(project: audio.project), to: toneOutput) { _ in }
+  var energies: [Double] = [], sampleRate = 48_000.0
+  _ = try await SourcePCM.readStable(url: toneOutput, sourceStart: .zero, duration: nil) { chunk in
+   sampleRate = chunk.sampleRate
+   for frame in 0..<(chunk.values.count / chunk.channels) { let value = Double(chunk.values[frame * chunk.channels]); energies.append(value * value) }
+  }
+  func rms(_ begin: Double, _ end: Double) -> Double {
+   let range = Int(begin * sampleRate)..<min(energies.count, Int(end * sampleRate)); return sqrt(energies[range].reduce(0, +) / Double(range.count))
+  }
+  let outsideRMS = rms(0.5, 0.6), midpointRMS = rms(1.45, 1.55)
+  check("Actual audio crossfade avoids doubled amplitude at the midpoint", outsideRMS > 0.05 && abs(midpointRMS / outsideRMS - 1) < 0.05, "outside RMS \(outsideRMS), midpoint RMS \(midpointRMS)")
+  var tail = EditorHistory(project: audio.project)
+  let tailTrack = tail.project.sequence.tracks.first { $0.transitionContext != nil }!, tailClip = tailTrack.clips[0]
+  let tailExpected = try await frames(tail.project, [1.2, 1.4])
+  try tail.apply(.trimClip(trackID: tailTrack.id, clipID: tailClip.id, newStart: tailClip.start, newSourceStart: .zero, newDuration: MediaTime(seconds: 0.6)))
+  let tailActual = try await frames(tail.project, [1.2, 1.4])
+  check("Tail trim during an effect preserves retained transition pixels", zip(tailExpected, tailActual).allSatisfy { $0.maxDifference($1) <= 2 })
+  let restoredOutgoing = tail.project.sequence.tracks.flatMap(\.clips).first { $0.name == "Tone-A" }!
+  check("Clipped effect restores outgoing native gain outside its retained window", abs(ClipEnvelopes.audioVolume(clip: restoredOutgoing, at: MediaTime(seconds: 1.65).cmTime) - 1) < 0.001)
+  check("Clipped effect keeps its original progress inside the retained window", abs(ClipEnvelopes.audioVolume(clip: restoredOutgoing, at: MediaTime(seconds: 1.4).cmTime) - 0.6) < 0.001)
+  let clippedTone = root.appendingPathComponent("clipped-transition-tone.mp4")
+  try await ExportJob().export(plan: TimelineRenderer.build(project: tail.project), to: clippedTone) { _ in }
+  energies = []
+  _ = try await SourcePCM.readStable(url: clippedTone, sourceStart: .zero, duration: nil) { chunk in
+   sampleRate = chunk.sampleRate
+   for frame in 0..<(chunk.values.count / chunk.channels) { let value = Double(chunk.values[frame * chunk.channels]); energies.append(value * value) }
+  }
+  let afterClippedRMS = rms(1.63, 1.67)
+  check("Actual output restores normal audio after a clipped transition", abs(afterClippedRMS / outsideRMS - 1) < 0.03, "normal RMS \(outsideRMS), after clipped effect \(afterClippedRMS)")
+  tail.undo(); check("Tail trim undo restores the complete transition and audio", tail.project == audio.project)
+  let audioTrack = audio.project.sequence.tracks.first { $0.transitionContext != nil }!
+  try audio.apply(.removeTransition(trackID: audioTrack.id))
+  check("Removing the transition restores exact connected audio metadata and placement", audio.project.sequence == audioBase.sequence)
+  let restoredTone = root.appendingPathComponent("restored-tone.mp4")
+  try await ExportJob().export(plan: TimelineRenderer.build(project: audio.project), to: restoredTone) { _ in }
+  check("Restored connected audio exports with original duration", abs(try await AVURLAsset(url: restoredTone).load(.duration).seconds - 4) < 0.05)
+
   // ---- Real iPhone footage (read-only copies): transitions between two different real clips ----
   let realAURL = URL(fileURLWithPath: "Artifacts/Upgrade-0.7/RealCopies/IMG_0047.mov").standardizedFileURL, realBURL = URL(fileURLWithPath: "Artifacts/Upgrade-0.7/RealCopies/IMG_9211.mov").standardizedFileURL
   let digestA = try await FileIdentity.sha256(realAURL), digestB = try await FileIdentity.sha256(realBURL)

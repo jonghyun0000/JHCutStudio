@@ -21,6 +21,9 @@ public struct StabilizationData: Codable, Equatable, Sendable {
     public var step: Double
     /// Source time of sample 0.
     public var analyzedStart: MediaTime
+    /// End of the decoded selection, including the final frame's held exposure (VFR).
+    /// Nil in older files; those retain the historical sample-step coverage allowance.
+    public var analyzedEnd: MediaTime?
     /// Decoded frame size the fractions refer to (aspect ratio matters for rotation).
     public var frameWidth: Int
     public var frameHeight: Int
@@ -29,6 +32,8 @@ public struct StabilizationData: Codable, Equatable, Sendable {
     public var angle: [Float]
     /// Frame pairs whose estimate was implausible (scene change, fast whip pan) and treated as no motion.
     public var rejectedSteps: Int
+    /// Accepted estimates / attempted frame pairs. Nil for documents written before confidence reporting.
+    public var confidence: Double?
     public init(enabled: Bool = true, strength: Double = 1, smoothing: Double = 0.8, step: Double, analyzedStart: MediaTime, frameWidth: Int, frameHeight: Int,
                 x: [Float], y: [Float], angle: [Float], rejectedSteps: Int = 0) {
         self.enabled = enabled; self.strength = strength; self.smoothing = smoothing; self.step = step; self.analyzedStart = analyzedStart
@@ -38,11 +43,14 @@ public struct StabilizationData: Codable, Equatable, Sendable {
     public var analyzedDuration: Double { Double(max(0, count - 1)) * step }
     public var analyzedRange: ClosedRange<Double> { analyzedStart.seconds...(analyzedStart.seconds + analyzedDuration) }
     public func covers(_ sourceStart: MediaTime, duration: MediaTime) -> Bool {
-        count >= 2 && sourceStart.seconds >= analyzedStart.seconds - 0.001 && (sourceStart + duration).seconds <= analyzedStart.seconds + analyzedDuration + step
+        let end = analyzedEnd?.seconds ?? (analyzedStart.seconds + analyzedDuration + step)
+        return count >= 2 && sourceStart.seconds >= analyzedStart.seconds - step && (sourceStart + duration).seconds <= end
     }
     /// Structural checks used by the project validator; a damaged block must be refused, not rendered.
     public var validationProblem: String? {
         guard x.count == y.count, y.count == angle.count, x.count <= Self.maximumSamples else { return "안정화 경로의 길이가 올바르지 않습니다." }
+        guard analyzedStart >= .zero, rejectedSteps >= 0, confidence.map({ $0.isFinite && (0...1).contains($0) }) ?? true else { return "안정화 신뢰도·원본 시작 정보가 올바르지 않습니다." }
+        if let analyzedEnd { guard analyzedEnd >= analyzedStart, (analyzedEnd - analyzedStart).seconds <= 600.05 else { return "안정화 분석 끝 범위가 올바르지 않습니다." } }
         guard step.isFinite, step > 0.001, step < 1, frameWidth > 0, frameHeight > 0, frameWidth <= 16_384, frameHeight <= 16_384 else { return "안정화 분석 정보가 올바르지 않습니다." }
         guard strength.isFinite, Self.strengthRange.contains(strength), smoothing.isFinite, Self.smoothingRange.contains(smoothing) else { return "안정화 강도·부드러움 값이 범위를 벗어났습니다." }
         guard x.allSatisfy({ $0.isFinite && abs($0) < 50 }), y.allSatisfy({ $0.isFinite && abs($0) < 50 }), angle.allSatisfy({ $0.isFinite && abs($0) < 200 }) else { return "안정화 경로에 유효하지 않은 값이 있습니다." }

@@ -1,9 +1,8 @@
 import Foundation
 import CoreGraphics
 
-/// Where a caption's pixels actually land on the canvas, measured from the same rasteriser the
-/// preview and export use — so “inside the safe area” means the drawn glyphs, stroke and
-/// background box, not an estimate from font metrics.
+/// Pixel diagnostics plus the complete pre-raster glyph/stroke/background footprint.
+/// A clipped raster can never prove that the complete caption fits on the canvas.
 public enum CaptionLayout {
     /// Share of each dimension that counts as safe (80% → 10% margin on every side).
     public static let safeFraction = 0.8
@@ -35,7 +34,9 @@ public enum CaptionLayout {
     }
 
     public static func isInsideSafeArea(_ title: Title, width: Int, height: Int) throws -> Bool {
-        guard let box = try bounds(of: title, width: width, height: height) else { return true }
+        let info = try TitlePreviewRenderer.layout(title: title, canvasWidth: Double(width))
+        guard !info.wasTruncated, !info.exceedsLineLimit else { return false }
+        guard let box = TitlePreviewRenderer.fullBounds(title: title, size: CGSize(width: width, height: height)) else { return true }
         return safeArea(width: width, height: height).insetBy(dx: -1, dy: -1).contains(box)
     }
 
@@ -43,13 +44,20 @@ public enum CaptionLayout {
     /// then moves it vertically into the safe area. Returns nil when it cannot fit even at the
     /// minimum size — the caller reports that caption instead of silently clipping it.
     public static func fitted(_ original: Title, width: Int, height: Int, minimumFontSize: Double = 24) throws -> Title? {
+        guard minimumFontSize.isFinite, minimumFontSize >= 8, width > 0, height > 0 else { return nil }
         var title = original
+        // Fitting changes only presentation; explicit newlines and all input text are preserved.
+        var style = title.style ?? TextStyle(padding: 0, lineSpacing: 0)
+        style.wrapWidthFraction = min(style.wrapWidthFraction ?? 0.88, 0.76)
+        title.style = style
         let safe = safeArea(width: width, height: height)
         for _ in 0..<24 {
-            guard let box = try bounds(of: title, width: width, height: height) else { return title }
-            if box.width > safe.width + 1 || box.height > safe.height + 1 {
+            let info = try TitlePreviewRenderer.layout(title: title, canvasWidth: Double(width))
+            guard let box = TitlePreviewRenderer.fullBounds(title: title, size: CGSize(width: width, height: height)) else { return title }
+            if box.width > safe.width + 1 || box.height > safe.height + 1 || info.exceedsLineLimit {
                 guard title.fontSize > minimumFontSize else { return nil }
-                let factor = max(0.6, min(0.95, Double(safe.width / max(1, box.width)), Double(safe.height / max(1, box.height))))
+                let lineFactor = info.exceedsLineLimit ? Double(info.lineLimit) / Double(max(1, info.totalLines)) : 1
+                let factor = max(0.6, min(0.95, lineFactor, Double(safe.width / max(1, box.width)), Double(safe.height / max(1, box.height))))
                 title.fontSize = max(minimumFontSize, (title.fontSize * factor).rounded(.down))
                 title.style?.strokeWidth *= factor; title.style?.padding *= factor
                 continue
@@ -60,7 +68,7 @@ public enum CaptionLayout {
             else if box.maxY > safe.maxY { shift = Double(box.maxY - safe.maxY) }       // too low: move up
             var dx = 0.0
             if box.minX < safe.minX { dx = Double(safe.minX - box.minX) } else if box.maxX > safe.maxX { dx = Double(safe.maxX - box.maxX) }
-            if shift == 0 && dx == 0 { return title }
+            if shift == 0 && dx == 0 { return title.fontSize >= minimumFontSize ? title : nil }
             title.y = min(1, max(0, title.y + shift / Double(height)))
             title.x = min(1, max(0, title.x + dx / Double(width)))
         }

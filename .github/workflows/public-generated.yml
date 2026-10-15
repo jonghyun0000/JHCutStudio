@@ -1,0 +1,143 @@
+name: Public generated-fixture CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: public-generated-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  generated-regression:
+    # Explicit arm64 OS label, not macos-latest. No signing/notary secrets.
+    runs-on: macos-26
+    timeout-minutes: 60
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - name: Check out source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          fetch-depth: 1
+          lfs: false
+          submodules: false
+
+      - name: Verify runner Git ownership and result reporting
+        run: python3 -B Tests/VerificationRunnerTests.py
+
+      - name: Select process-local Xcode and verify SDK
+        run: |
+          set -euo pipefail
+          developer=/Applications/Xcode_26.5.app/Contents/Developer
+          test -x "$developer/Toolchains/XcodeDefault.xctoolchain/usr/bin/swiftc"
+          test -d "$developer/Platforms/MacOSX.platform/Developer/Library/Frameworks/XCTest.framework"
+          test "$(uname -m)" = arm64
+          export DEVELOPER_DIR="$developer"
+          sdk="$(xcrun --sdk macosx --show-sdk-path)"
+          sdk_version="$(xcrun --sdk macosx --show-sdk-version)"
+          python3 - "$sdk_version" <<'PYCODE'
+          import sys
+          version = tuple(int(part) for part in sys.argv[1].split('.'))
+          if version < (26,):
+              raise SystemExit('The full application requires macOS SDK 26 or newer.')
+          PYCODE
+          {
+            echo "DEVELOPER_DIR=$developer"
+            echo "JHCUT_DEVELOPER_DIR=$developer"
+            echo "JHCUT_XCODE=$developer"
+            echo "JHCUT_SDK=$sdk"
+          } >> "$GITHUB_ENV"
+          sw_vers
+          xcrun swiftc --version
+          printf 'macOS SDK %s\n' "$sdk_version"
+          python3 --version
+
+      - name: Build full app and run generated regressions
+        run: |
+          set -euo pipefail
+          # No --core-only, real-video suites, --transcribe, model or pack install.
+          python3 -B Scripts/verification-run.py --suites domain compatibility productivity
+
+      - name: Check app bundle legal files and absent speech model
+        run: |
+          set -euo pipefail
+          python3 - <<'PYCODE'
+          from pathlib import Path
+          import json
+          root = Path.cwd()
+          indices = list(root.glob('Artifacts/Runs/*/verification-index.json'))
+          if len(indices) != 1:
+              raise SystemExit('Expected exactly one fresh verification run.')
+          index = json.loads(indices[0].read_text())
+          if index.get('appBuildRequested') is not True or index.get('buildExitCode') != 0:
+              raise SystemExit('A successful full app build is required.')
+          bundle = indices[0].parent / 'Build/JH CUT Studio.app/Contents/Resources'
+          pairs = [
+              ('LICENSE', 'Legal/LICENSE.txt'),
+              ('THIRD_PARTY_NOTICES.md', 'Legal/THIRD_PARTY_NOTICES.md'),
+              ('Resources/Brand/README.md', 'Legal/BRAND.md'),
+              ('Resources/Whisper/LICENSE-whisper.cpp.txt', 'Whisper/LICENSE-whisper.cpp.txt'),
+              ('Resources/Whisper/LICENSE-whisper-model.txt', 'Whisper/LICENSE-whisper-model.txt'),
+              ('Resources/Whisper/THIRD-PARTY-NOTICES.txt', 'Whisper/THIRD-PARTY-NOTICES.txt'),
+              ('Resources/Library/manifest.json', 'Library/manifest.json'),
+              ('Resources/Library/CREDITS.md', 'Library/CREDITS.md'),
+          ]
+          notices = sorted((root / 'Resources/Library/Licenses').rglob('*'))
+          if not any(path.is_file() for path in notices):
+              raise SystemExit('Library license inventory is missing.')
+          for path in notices:
+              if path.is_file():
+                  pairs.append((str(path.relative_to(root)), str(path.relative_to(root / 'Resources'))))
+          for source, destination in pairs:
+              expected, actual = root / source, bundle / destination
+              if not expected.is_file() or not actual.is_file() or not expected.stat().st_size:
+                  raise SystemExit(f'Missing or empty legal file: {source}')
+              if expected.read_bytes() != actual.read_bytes():
+                  raise SystemExit(f'Bundle legal file differs: {source}')
+          installed = Path.home() / 'Library/Application Support/JHCutStudio/Models/ggml-base.bin'
+          if installed.exists() or list(bundle.rglob('ggml-*.bin')):
+              raise SystemExit('This public CI lane must not install or bundle a speech model.')
+          print(f'PUBLIC_BUNDLE_LEGAL files={len(pairs)} verified; speech model absent')
+          PYCODE
+
+      - name: Report exact public regression scope
+        if: always()
+        run: |
+          set -euo pipefail
+          python3 - <<'PYCODE'
+          from pathlib import Path
+          import json, os
+          paths = list(Path('Artifacts/Runs').glob('*/verification-index.json'))
+          lines = ['## Public generated-fixture CI', '',
+                   'Full app compilation plus generated domain, compatibility and productivity probes.',
+                   'No private videos, installed speech model, translation packs, native UI acceptance, signing or notarization.', '']
+          valid = False
+          if len(paths) == 1:
+              data = json.loads(paths[0].read_text())
+              rows = data.get('suites', [])
+              lines.append(f"Runner status: `{data.get('status')}`; build exit: `{data.get('buildExitCode')}`.")
+              for row in rows:
+                  lines.append(f"- {row['suite']}: {row['status']}; {row['passed']} passed, {row['failures']} failed; exit {row['exitCode']}")
+              valid = (data.get('status') == 'passed' and data.get('appBuildRequested') is True
+                       and data.get('buildExitCode') == 0 and data.get('sourceUnchanged') is True
+                       and data.get('inputUnchanged') is True and not data.get('inputs')
+                       and data.get('infrastructure', {}).get('status') == 'passed'
+                       and [row['suite'] for row in rows] == ['domain', 'compatibility', 'productivity']
+                       and all(row['status'] == 'passed' and row['exitCode'] == 0
+                               and row['passed'] > 0 and row['failures'] == 0 for row in rows))
+          else:
+              lines.append('No unique completed run index; setup or build may have failed.')
+          with open(os.environ['GITHUB_STEP_SUMMARY'], 'a') as summary:
+              summary.write('\n'.join(lines) + '\n')
+          if not valid:
+              raise SystemExit('Public regression did not satisfy its complete generated-only contract.')
+          PYCODE

@@ -73,6 +73,8 @@ public struct Clip: Codable, Identifiable, Equatable, Sendable {
     public var volume: Double
     public var transform: ClipTransform
     public var title: Title?
+    /// nil preserves the legacy normal composition and does not add a new document key.
+    public var blendMode: ClipBlendMode?
     public var playbackRate: PlaybackRate?
     public var visual: VisualAdjustments?
     public var fadeIn: MediaTime?
@@ -84,12 +86,18 @@ public struct Clip: Codable, Identifiable, Equatable, Sendable {
     public var lineageID: UUID?
     public var ducking: [GainPoint]?
     public var captionMetadata: CaptionMetadata?
+    /// nil is a legacy/unclassified title; it is never silently declared a caption by its track.
+    public var captionRole: CaptionRole?
+    public var captionGroupID: UUID?
+    /// Representation switching is per clip. Track visibility remains the user's choice.
+    public var captionHidden: Bool?
     /// Measured camera path and how much of its shake to remove (video clips only).
     public var stabilization: StabilizationData?
     /// How this clip enters over the previous one (set on the incoming clip of a transition).
     public var transition: ClipTransition?
     /// Entrance/exit animation of a title or caption.
     public var titleAnimation: TitleAnimation?
+    public var transitionAudioFades: [TransitionAudioFade]?
     public var end: MediaTime { start + duration }
     public init(id: UUID = UUID(), name: String = "클립", assetID: UUID? = nil, start: MediaTime = .zero, sourceStart: MediaTime = .zero, duration: MediaTime = MediaTime(seconds: 3), volume: Double = 1, transform: ClipTransform = ClipTransform(), title: Title? = nil, playbackRate: PlaybackRate? = nil, visual: VisualAdjustments? = nil, fadeIn: MediaTime? = nil, fadeOut: MediaTime? = nil, audioFadeIn: MediaTime? = nil, audioFadeOut: MediaTime? = nil, keyframes: [TransformKeyframe]? = nil) {
         self.id = id; self.name = name; self.assetID = assetID; self.start = start; self.sourceStart = sourceStart; self.duration = duration; self.volume = volume; self.transform = transform; self.title = title
@@ -107,6 +115,7 @@ public struct Track: Codable, Identifiable, Equatable, Sendable {
     public var isHidden: Bool
     public var isLocked: Bool
     public var syncLocked: Bool?
+    public var transitionContext: TransitionContext?
     public init(id: UUID = UUID(), name: String, kind: TrackKind, clips: [Clip] = [], isMuted: Bool = false, isHidden: Bool = false, isLocked: Bool = false) {
         self.id = id; self.name = name; self.kind = kind; self.clips = clips; self.isMuted = isMuted; self.isHidden = isHidden; self.isLocked = isLocked
     }

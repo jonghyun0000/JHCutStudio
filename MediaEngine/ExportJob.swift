@@ -79,6 +79,18 @@ public final class ExportJob: @unchecked Sendable {
             throw MediaEngineError.failed("출력 공간이 부족합니다. 최소 예상 필요 공간: \(estimate / 1_048_576)MB, 사용 가능: \(available / 1_048_576)MB")
         }
         if isCancelled { throw MediaEngineError.cancelled }
+        // Diagnose the full glyph footprint before raster clipping. Hidden captions are absent
+        // from instructions; decorative titles may intentionally extend beyond the canvas.
+        var inspected: Set<UUID> = []
+        for instruction in plan.videoComposition.instructions {
+            guard let instruction = instruction as? TimelineInstruction else { continue }
+            for layer in instruction.layers where inspected.insert(layer.clip.id).inserted {
+                guard let role = CaptionQuery.role(of: layer.clip), role != .title else { continue }
+                if let report = try CaptionReadability.assess(layer.clip, width: Int(plan.videoComposition.renderSize.width), height: Int(plan.videoComposition.renderSize.height)), report.outsideCanvas {
+                    throw MediaEngineError.invalid("자막 전체 문구가 화면 밖에서 잘립니다: \(String(layer.clip.title?.text.prefix(24) ?? "")) · 자막 안전 영역 맞춤 또는 분할 후 다시 출력하세요.")
+                }
+            }
+        }
         // Keep AVAssetWriter's asynchronous .sb-* sidecars inside this job's private scratch directory.
         let scratch = directory.appendingPathComponent(".JHCut-export-\(UUID().uuidString).partial", isDirectory: true)
         try fileManager.createDirectory(at: scratch, withIntermediateDirectories: false)
@@ -120,6 +132,9 @@ public final class ExportJob: @unchecked Sendable {
             videoSettings[AVVideoCompressionPropertiesKey] = compression
         }
         let videoInput = AVAssetWriterInput(mediaType: .video, outputSettings: videoSettings)
+        // The default 600 Hz clock rounds NTSC frame boundaries. A request at
+        // 30 * 1001/24000 could then decode frame 29 instead of the frozen frame 30.
+        videoInput.mediaTimeScale = plan.frameDuration.timescale
         videoInput.expectsMediaDataInRealTime = false
         guard writer.canAdd(videoInput) else { throw MediaEngineError.failed("선택한 영상 인코더를 만들 수 없습니다.") }
         writer.add(videoInput)
@@ -185,8 +200,8 @@ public final class ExportJob: @unchecked Sendable {
         if isCancelled { throw MediaEngineError.cancelled }
         guard writer.status == .completed else { throw writer.error ?? MediaEngineError.failed("MP4 마무리에 실패했습니다.") }
         // The private scratch directory is on the destination volume, so this final rename is atomic.
-        // moveItem also rejects a destination created during encoding.
-        try fileManager.moveItem(at: temporary, to: destination)
+        // Exclusive publication also rejects destinations created during encoding; ExFAT uses exclusive copy.
+        try ExclusivePublication.file(from: temporary, to: destination) { if self.isCancelled { throw MediaEngineError.cancelled } }
         committed = true
         progress(1)
     }

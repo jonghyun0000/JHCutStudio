@@ -12,6 +12,7 @@ struct RenderLayer {
     var stabilization: StabilizationPlan? = nil
     /// Drawn extent of the text, computed only for titles that use the typewriter reveal.
     var titleBounds: CGRect? = nil
+    var outgoingFamily: UUID? = nil
 }
 
 final class TimelineInstruction: NSObject, AVVideoCompositionInstructionProtocol, @unchecked Sendable {
@@ -22,8 +23,10 @@ final class TimelineInstruction: NSObject, AVVideoCompositionInstructionProtocol
     let passthroughTrackID: CMPersistentTrackID = kCMPersistentTrackID_Invalid
     let layers: [RenderLayer]
     let canvas: CGSize
-    init(range: CMTimeRange, layers: [RenderLayer], carrier: CMPersistentTrackID, canvas: CGSize) {
+    let transparentBackground: Bool
+    init(range: CMTimeRange, layers: [RenderLayer], carrier: CMPersistentTrackID, canvas: CGSize, transparentBackground: Bool = false) {
         timeRange = range; self.layers = layers; self.canvas = canvas
+        self.transparentBackground = transparentBackground
         requiredSourceTrackIDs = ([carrier] + layers.compactMap(\.trackID)).map { NSNumber(value: $0) }
     }
 }
@@ -56,7 +59,8 @@ public final class TimelineCompositor: NSObject, AVVideoCompositing {
                     request.finish(with: MediaEngineError.failed("영상 프레임 메모리를 확보하지 못했습니다.")); return
                 }
                 let bounds = CGRect(origin: .zero, size: instruction.canvas)
-                var result = CIImage(color: .black).cropped(to: bounds)
+                let background = CIImage(color: instruction.transparentBackground ? .clear : .black).cropped(to: bounds)
+                var groups: [(families: Set<UUID>, scene: BlendScene)] = []
                 for layer in instruction.layers {
                     let source: CIImage
                     if let fixed = layer.image { source = fixed }
@@ -97,13 +101,13 @@ public final class TimelineCompositor: NSObject, AVVideoCompositing {
                             guard let keyed = Self.greenKey?.apply(extent: image.extent, arguments: [image, strength]) else { request.finish(with: MediaEngineError.failed("크로마키를 적용하지 못했습니다.")); return }
                             image = keyed
                         }
-                        if visual.ellipseMask == true {
-                            let extent = image.extent
-                            let mask = CIFilter(name: "CIRadialGradient", parameters: ["inputCenter": CIVector(x: 0, y: 0), "inputRadius0": 0.96, "inputRadius1": 1.0, "inputColor0": CIColor.white, "inputColor1": CIColor.black])!.outputImage!
-                                .transformed(by: CGAffineTransform(scaleX: extent.width / 2, y: extent.height / 2))
-                                .transformed(by: CGAffineTransform(translationX: extent.midX, y: extent.midY))
-                            image = image.applyingFilter("CIBlendWithMask", parameters: ["inputBackgroundImage": CIImage(color: .clear).cropped(to: extent), "inputMaskImage": mask]).cropped(to: extent)
+                        if let key = visual.chromaKey {
+                            guard visual.greenScreen == nil else { request.finish(with: ProjectError("중복된 크로마키 설정입니다.")); return }
+                            do { image = try ChromaKeyRenderer.apply(to: image, key: key) }
+                            catch { request.finish(with: error); return }
                         }
+                        do { image = try ShapeMaskRenderer.apply(to: image, visual: visual) }
+                        catch { request.finish(with: error); return }
                     }
                     let input = image.extent
                     if layer.clip.title == nil {
@@ -129,14 +133,26 @@ public final class TimelineCompositor: NSObject, AVVideoCompositing {
                     if opacity < 1 {
                         image = image.applyingFilter("CIColorMatrix", parameters: ["inputAVector": CIVector(x: 0, y: 0, z: 0, w: opacity)])
                     }
-                    // Dissolve is the clip's fade-in (as in 0.6); every other kind draws its own motion during the overlap.
-                    if let transition = layer.clip.transition, layer.clip.title == nil, localTime < transition.duration, transition.kind != .dissolve || layer.clip.fadeIn == nil {
-                        let p = localTime.seconds / transition.duration.seconds
-                        result = TransitionRenderer.compose(transition, progress: p, incoming: image, below: result, bounds: bounds)
-                        continue
+                    let family = TransitionEditing.family(layer.clip)
+                    let scene = BlendScene.clip(image, layer.clip.blendMode ?? .normal)
+                    // Pair only the outgoing/incoming scenes. Decorative overlays are composed
+                    // afterward at their own positions and never move with a push transition.
+                    if let transition = layer.clip.transition, layer.clip.title == nil, transition.isActive(at: localTime), transition.independentFade == true || transition.kind != .dissolve || layer.clip.fadeIn == nil {
+                        if let outgoing = layer.outgoingFamily, let index = groups.lastIndex(where: { $0.families.contains(outgoing) }) {
+                            groups[index].scene = .transition(transition, transition.progress(at: localTime), scene, groups[index].scene)
+                            groups[index].families.insert(family)
+                        } else {
+                            let clear = CIImage(color: .clear).cropped(to: bounds)
+                            groups.append(([family], .transition(transition, transition.progress(at: localTime), scene, .clip(clear, .normal))))
+                        }
+                    } else {
+                        groups.append(([family], scene))
                     }
-                    result = image.composited(over: result).cropped(to: bounds)
                 }
+                let result: CIImage
+                do {
+                    result = try groups.reduce(background) { try $1.scene.render(over: $0, bounds: bounds) }
+                } catch { request.finish(with: error); return }
                 context.render(result, to: buffer, bounds: bounds, colorSpace: colorSpace)
                 CVBufferSetAttachment(buffer, kCVImageBufferCGColorSpaceKey, colorSpace, .shouldPropagate)
                 CVBufferSetAttachment(buffer, kCVImageBufferColorPrimariesKey, kCVImageBufferColorPrimaries_ITU_R_709_2, .shouldPropagate)
@@ -166,42 +182,6 @@ public final class TimelineCompositor: NSObject, AVVideoCompositing {
 
 enum TitleRasterizer {
     static func image(title: Title, size: CGSize) throws -> CIImage {
-        let names = CTFontManagerCopyAvailablePostScriptNames() as? [String] ?? []
-        guard names.contains(title.fontName) else {
-            throw MediaEngineError.unsupported("설치되지 않은 글꼴입니다: \(title.fontName). 제목 속성에서 설치된 글꼴을 선택하세요.")
-        }
-        if let style = title.style { return try StyledTitleRasterizer.image(title: title, size: size, style: style) }
-        let space = CGColorSpace(name: CGColorSpace.sRGB)!
-        guard let context = CGContext(data: nil, width: Int(size.width), height: Int(size.height), bitsPerComponent: 8, bytesPerRow: 0,
-                                      space: space, bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue) else {
-            throw MediaEngineError.failed("제목을 그릴 수 없습니다.")
-        }
-        let hex = title.colorHex.trimmingCharacters(in: CharacterSet(charactersIn: "#"))
-        let rgb = UInt32(hex, radix: 16) ?? 0xFFFFFF
-        let color = CGColor(colorSpace: space, components: [CGFloat((rgb >> 16) & 255) / 255, CGFloat((rgb >> 8) & 255) / 255, CGFloat(rgb & 255) / 255, 1])!
-        let font = CTFontCreateWithName(title.fontName as CFString, title.fontSize, nil)
-        var alignment = CTTextAlignment.center
-        let paragraph = withUnsafePointer(to: &alignment) { pointer in
-            let setting = CTParagraphStyleSetting(spec: .alignment, valueSize: MemoryLayout<CTTextAlignment>.size, value: pointer)
-            return CTParagraphStyleCreate([setting], 1)
-        }
-        let attributes: [NSAttributedString.Key: Any] = [
-            NSAttributedString.Key(kCTFontAttributeName as String): font,
-            NSAttributedString.Key(kCTForegroundColorAttributeName as String): color,
-            NSAttributedString.Key(kCTParagraphStyleAttributeName as String): paragraph
-        ]
-        let string = NSAttributedString(string: title.text, attributes: attributes)
-        let framesetter = CTFramesetterCreateWithAttributedString(string)
-        let width = size.width * 0.88
-        let suggested = CTFramesetterSuggestFrameSizeWithConstraints(framesetter, CFRange(location: 0, length: string.length), nil,
-                                                                    CGSize(width: width, height: size.height), nil)
-        let rect = CGRect(x: size.width * title.x - width / 2, y: size.height * title.y - ceil(suggested.height) / 2,
-                          width: width, height: ceil(suggested.height) + 4)
-        let frame = CTFramesetterCreateFrame(framesetter, CFRange(location: 0, length: string.length), CGPath(rect: rect, transform: nil), nil)
-        context.setShadow(offset: CGSize(width: 0, height: -3), blur: 7, color: CGColor(gray: 0, alpha: 0.9))
-        context.textMatrix = .identity
-        CTFrameDraw(frame, context)
-        guard let image = context.makeImage() else { throw MediaEngineError.failed("제목 이미지 생성에 실패했습니다.") }
-        return CIImage(cgImage: image)
+        try StyledTitleRasterizer.image(title: title, size: size, style: StyledTitleRasterizer.style(for: title))
     }
 }

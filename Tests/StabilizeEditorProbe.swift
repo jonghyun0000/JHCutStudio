@@ -7,8 +7,7 @@ import JHCutCore
 @main struct StabilizeEditorProbe {
  @MainActor static func main() async throws {
   setbuf(stdout, nil); _ = NSApplication.shared
-  let root = URL(fileURLWithPath: CommandLine.arguments.dropFirst().first ?? "Artifacts/Upgrade-0.7/StabilizeEditor", isDirectory: true).standardizedFileURL
-  try? FileManager.default.removeItem(at: root)
+  let root = try ProbeWorkspace.prepare(defaultPath: "Artifacts/Upgrade-0.7/StabilizeEditor")
   try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
   var rows: [[String: Any]] = []
   func check(_ name: String, _ passed: Bool, _ detail: String = "") { rows.append(["name": name, "passed": passed, "detail": detail]); print("\(passed ? "PASS" : "FAIL") \(name) \(detail)") }
@@ -37,7 +36,7 @@ import JHCutCore
   check("Analysis stored on the clip", model.error == nil && stored() != nil, model.error ?? model.message)
   let data = stored()!
   check("Stored range covers the clip's source range", data.covers(clip.sourceStart, duration: clip.sourceDuration), String(format: "%.1f s at 30 Hz, %d samples", data.analyzedDuration, data.count))
-  check("Message describes the result in plain words", model.message.contains("손떨림 분석 완료") && model.message.contains("화면 확대"), model.message)
+  check("Message describes the result in plain words", model.message.contains("손떨림 분석 완료") && (model.message.contains("화면 확대") || model.message.contains("원본 유지")), model.message)
   model.undo()
   check("One undo removes the whole analysis", model.project == before)
   model.redo()
@@ -46,7 +45,16 @@ import JHCutCore
   var tuned = model.project.sequence.tracks[0].clips[0]; tuned.stabilization?.strength = 0.4; tuned.stabilization?.smoothing = 1.6
   model.perform(.updateClip(trackID: model.project.sequence.tracks[0].id, clip: tuned))
   model.analyzeStabilization(); try await waitIdle()
-  check("Re-analysis keeps the user's strength and smoothing", stored()?.strength == 0.4 && stored()?.smoothing == 1.6)
+  check("Re-analysis keeps the user's strength and smoothing", stored()?.strength == min(0.4,(stored()?.confidence ?? 1)<0.65 ? 0.35 : 1) && stored()?.smoothing == 1.6)
+  tuned = model.project.sequence.tracks[0].clips[0]; tuned.stabilization?.enabled = false
+  model.perform(.updateClip(trackID:model.project.sequence.tracks[0].id,clip:tuned))
+  model.analyzeStabilization(); try await waitIdle()
+  check("Manual disabled setting survives re-analysis", stored()?.enabled == false)
+  let beforeDocumentChange = model.project
+  model.analyzeStabilization(); model.documentURL = root.appendingPathComponent("Other.jhcut")
+  try await waitIdle()
+  check("Same project in changed document: stale analysis refused", model.project == beforeDocumentChange && model.error?.contains("변경") == true)
+  model.documentURL = nil; model.error = nil
   // Save / reopen
   let doc = root.appendingPathComponent("Stabilized.jhcut")
   try ProjectStore.save(model.project, to: doc)
@@ -93,6 +101,29 @@ import JHCutCore
   var p3 = project; p3.sequence.tracks[2].clips = [title]; model.history = EditorHistory(project: p3)
   model.selectedClipID = title.id; model.selectedClipIDs = [title.id]
   check("Title clips are not stabilisable", model.stabilizableSelection == nil)
+  // Exercise the same asynchronous conversion entry point used by the menu without modal panels.
+  let prepared = root.appendingPathComponent("Prepared")
+  let small = URL(fileURLWithPath:"Artifacts/Stage5Copies/IMG_8490.mov").standardizedFileURL
+  model.history = EditorHistory(project:Project(name:"Conversion")); model.error = nil
+  let assetsBefore = model.project.assets.count
+  model.prepareMedia(audioOnly:false,sourceURL:small,audioTrackIndex:0,outputDirectory:prepared)
+  try await waitIdle()
+  check("SDR copy conversion is added through editor workflow", model.error == nil && model.project.assets.count == assetsBefore+1,model.error ?? "")
+  let afterConversion = model.project
+  model.undo(); check("Prepared media addition is undoable", model.project.assets.count == assetsBefore)
+  model.redo(); check("Prepared media redo restores asset", model.project == afterConversion)
+  let filesBefore = (try? FileManager.default.contentsOfDirectory(atPath:prepared.path)) ?? []
+  model.error = nil
+  model.prepareMedia(audioOnly:false,sourceURL:small,audioTrackIndex:0,outputDirectory:prepared)
+  model.documentURL = root.appendingPathComponent("ChangedDuringConversion.jhcut")
+  try await waitIdle()
+  let filesAfter = (try? FileManager.default.contentsOfDirectory(atPath:prepared.path)) ?? []
+  check("Changed document rejects converted copy and removes orphan", model.project == afterConversion && model.error?.contains("변경") == true && Set(filesBefore)==Set(filesAfter))
+  model.documentURL = nil; model.error = nil
+  model.prepareMedia(audioOnly:false,sourceURL:small,audioTrackIndex:0,outputDirectory:prepared)
+  model.cancelProductivity(); try await waitIdle()
+  let filesAfterCancel = (try? FileManager.default.contentsOfDirectory(atPath:prepared.path)) ?? []
+  check("Cancelled conversion leaves document/files unchanged", model.project == afterConversion && Set(filesBefore)==Set(filesAfterCancel) && model.message.contains("취소"))
   check("Source media never modified", try await FileIdentity.sha256(source) == digest)
   let failures = rows.filter { ($0["passed"] as? Bool) != true }.count
   print("STABILIZE_EDITOR_RESULT checks=\(rows.count) failures=\(failures)")

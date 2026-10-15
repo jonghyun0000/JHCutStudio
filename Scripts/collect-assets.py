@@ -42,10 +42,24 @@ def music_one(item):
     (LIB/'Licenses'/('OGA-'+slug+'.txt')).write_text('Title: '+slug+'\nAuthor: '+author+'\nSource: '+page+'\nLicense: CC0 1.0\nLicense URL: '+CC0+'\nDownload: '+url+'\nReviewed: 2026-09-20\nNo preview images or unrelated page assets are redistributed.\n')
     ext=pathlib.Path(urllib.request.url2pathname(urllib.parse.urlparse(url).path)).suffix
     downloaded=CACHE/(slug+ext); original=fetch(url,downloaded)
-    relative='Audio/Music/'+slug+('.wav' if ext=='.ogg' else ext)
+    # Techno 5's source MP3 has inconsistent gapless length metadata. Preserve all available
+    # decoded samples as float PCM; keep the reviewed source hash and old path for saved projects.
+    normalized = ext == '.ogg' or slug == 'electronic'
+    relative='Audio/Music/'+slug+('.wav' if normalized else ext)
     destination=LIB/relative; destination.parent.mkdir(parents=True,exist_ok=True)
-    if ext=='.ogg': subprocess.run(['/usr/bin/afconvert',str(downloaded),str(destination),'-f','WAVE','-d','LEI16'],check=True)
+    if normalized: subprocess.run(['/usr/bin/afconvert',str(downloaded),str(destination),'-f','WAVE','-d','LEF32' if slug=='electronic' else 'LEI16'],check=True)
     else: destination.write_bytes(original)
+    if slug == 'electronic':
+        # Keep the reviewed prior bytes independently of future source-lock refreshes.
+        legacy = LIB/'Audio/Music/electronic.mp3'
+        expected_legacy = '43c498f047022eeb7bd281b83d4ce848dc0a542b0e36bb69880e96231a624f65'
+        if legacy.exists():
+            if sha(legacy.read_bytes()) != expected_legacy: raise RuntimeError('Legacy MP3 was changed; preserve and review it before recollection')
+        else:
+            if sha(original) != expected_legacy: raise RuntimeError('Reviewed legacy MP3 bytes unavailable; cannot populate compatibility source')
+            with legacy.open('xb') as legacy_file: legacy_file.write(original)
+        with (LIB/'Licenses'/('OGA-'+slug+'.txt')).open('a') as evidence:
+            evidence.write('Catalog audio is normalized to 32-bit float PCM WAV with native macOS afconvert because the reviewed source MP3 has inconsistent gapless length metadata. The original source SHA is retained; the prior MP3 path is not deleted, to preserve saved project references. See docs/LIBRARY-SOURCE-AUDIT-2026-10-11.md for the source/PCM comparison.\n')
     return dict(id='oga-'+slug,name=name,category='music',relativePath=relative,author=author,sourceURL=page,license='CC0-1.0',licenseURL=CC0,sha256=sha(destination.read_bytes()),tags=tags+['외부 수집','CC0'],origin='downloaded',originalFilename=urllib.parse.unquote(pathlib.Path(urllib.parse.urlparse(url).path).name),downloadURL=url,sourceSHA256=sha(original),fileBytes=destination.stat().st_size)
 
 for folder in ['Audio/SFX/Kenney','Audio/Music','Graphics','Licenses']:(LIB/folder).mkdir(parents=True,exist_ok=True)

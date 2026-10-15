@@ -10,12 +10,12 @@ import JHCutCore
 @main struct CompatibilityProbe {
     struct Check: Codable { let name: String; let passed: Bool; let detail: String }
     struct Report: Codable { let generatedAt: Date; let coreSHA256: String; let checks: [Check]; let elapsedSeconds: Double; let scope: String }
-    static func main() async {
+    static func main() async throws {
         do { try await run() }
         catch { fputs("Compatibility probe failed: \(error)\n", stderr); exit(1) }
     }
     static func run() async throws {
-        let folder = URL(fileURLWithPath: CommandLine.arguments.dropFirst().first ?? "Artifacts/Compatibility", isDirectory: true).standardizedFileURL
+        let folder = try ProbeWorkspace.prepare(defaultPath: "Artifacts/Compatibility")
         let fixtureFolder = folder.appendingPathComponent("fixtures", isDirectory: true)
         try FileManager.default.createDirectory(at: fixtureFolder, withIntermediateDirectories: true)
         let start = Date()
