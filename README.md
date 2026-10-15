@@ -1,14 +1,22 @@
 # JH CUT Studio 0.7
 
-> Development source candidate: publication, successful builds and supported installation are separate gates. Check the actual source revision and Release assets. See [source/evaluation boundaries](docs/PUBLIC-PRIVATE-VALIDATION.md).
+> Public development source: publication, successful builds and supported installation are separate gates. Check the actual source revision and Release assets. See [source/evaluation boundaries](docs/PUBLIC-PRIVATE-VALIDATION.md).
 
 A local video editor for Mac, built for individual creators working with iPhone footage, short videos, interviews and promotional projects.
 
 Edit a multitrack timeline, create Korean, Japanese and English subtitle workflows, and export without an account, subscription or product watermark. Speech recognition runs on your Mac with an optional Whisper model.
 
-[한국어 안내](README.ko.md) · [Release readiness](docs/RELEASE-READINESS.md) · [Contributing](CONTRIBUTING.md)
+[한국어 안내](README.ko.md) · [Project site](https://jhcut-studio.jonghyun04.chatgpt.site) · [Starter projects](https://github.com/jonghyun0000/JHCutStudio/releases/tag/samples-0.7.0-v2) · [Release readiness](docs/RELEASE-READINESS.md) · [Contributing](CONTRIBUTING.md)
 
 **Development build: 0.7.0, build 8.** Signed public downloads are still being prepared. The interface is primarily Korean. An App Language menu now offers partial English coverage for the main editing flow and model-installation consent; advanced tools and some diagnostics remain Korean. This project does not claim feature or performance parity with a commercial editor.
+
+## Actual app screenshots
+
+![Korean editor with the generated Vertical Story sample](docs/images/editor-ko.jpg)
+
+![Partial-English editor with Korean Inspector controls](docs/images/editor-en-partial.jpg)
+
+Local development app 0.7.0/build 8, captured before the later 65-entry Auto Captions English follow-up. English is partial; advanced Inspector controls remain Korean. The MIT sample uses generated graphics, manual captions and test chords, not speech recognition results. These screenshots do not represent a signed app installer or a usage recording. See [screenshot provenance](docs/images/README.md).
 
 ## What you can do
 
@@ -88,10 +96,10 @@ The source-bound runner requires a standalone Git checkout with a valid HEAD (fo
 For a fresh app build and generated-fixture checks:
 
 ```bash
-python3 -B Scripts/verification-run.py --suites domain compatibility productivity
+python3 -B Scripts/verification-run.py --suites domain compatibility productivity ui-localization
 ```
 
-The domain lane additionally requires an installed Xcode XCTest framework; set `JHCUT_XCODE` to that Xcode's developer directory if needed. [Public CI](.github/workflows/public-generated.yml) separates these generated probes from private-footage and installed-model checks. On 2026-10-15 UTC (2026-10-16 KST), the [PR hosted run](https://github.com/jonghyun0000/JHCutStudio/actions/runs/38769007139) built the full app and passed 138 generated checks (55 domain, 46 compatibility, 37 productivity), with 10 Python runner tests passed separately. See [the dated scope and limits](docs/RELEASE-READINESS.md#hosted-ci-evidence); [Actions](https://github.com/jonghyun0000/JHCutStudio/actions/workflows/public-generated.yml) shows subsequent results. This result does not establish signed installation or recognition accuracy.
+The domain lane additionally requires an installed Xcode XCTest framework; set `JHCUT_XCODE` to that Xcode's developer directory if needed. [Public CI](.github/workflows/public-generated.yml) separates these generated probes from private-footage and installed-model checks. On 2026-10-15 UTC (2026-10-16 KST), the [main hosted run](https://github.com/jonghyun0000/JHCutStudio/actions/runs/38773524663) for `5f77ae1bb30021f7317bd5b32955fb72c9a4af28` built the full app and passed 138 generated checks (55 domain, 46 compatibility, 37 productivity), with 10 Python runner tests and 16 workspace checks passed separately. Its diagnostic artifact retains the verification index and logs, not outputs or compiled binaries. See [the dated scope and limits](docs/RELEASE-READINESS.md#hosted-ci-evidence); [Actions](https://github.com/jonghyun0000/JHCutStudio/actions/workflows/public-generated.yml) shows subsequent results. This result does not establish signed installation or recognition accuracy.
 
 Each run writes a unique directory under `Artifacts/Runs/`, with a source-bound index, build, logs and output evidence. Check the terminal status, suite exit codes and file hashes. Do not reuse or overwrite old run directories. The current default list has **73 suites**; running a subset does not prove all 73 pass. Full local validation additionally needs the documented private dataset, an installed model and other feature-specific inputs.
 
@@ -107,6 +115,6 @@ Build/JHCutValidate "$JHCUT_DEMO_OUTPUT"
 
 See [CONTRIBUTING](CONTRIBUTING.md) for changes and evidence expectations, [SECURITY](SECURITY.md) for vulnerability reporting, and the [architecture](docs/ARCHITECTURE.md) for code locations. Bug, feature and pull request templates are included. See the [changelog](CHANGELOG.md), [roadmap](ROADMAP.md) and [beginner contribution briefs](docs/GOOD-FIRST-ISSUES.md).
 
-A tested release package, public download site, redistributable sample projects, a real usage demo and contributor issues are still being prepared. Stars are optional and will never be a download requirement. The long-term goal is 10,000 GitHub stars; downloads, successful first exports, returning users and useful contributions will also be tracked.
+The [public bilingual site](https://jhcut-studio.jonghyun04.chatgpt.site) includes three actual app screenshots and links to the source and [three starter projects](https://github.com/jonghyun0000/JHCutStudio/releases/tag/samples-0.7.0-v2). The sample-only prerelease contains MIT-licensed generated graphics, manual captions and mathematical test chords; it is not an app installer or an ASR accuracy demo. A signed/notarized app package, actual usage recording and contributor issues remain open. Stars are optional and will never be a download requirement. The long-term goal is 10,000 GitHub stars; downloads, successful first exports, returning users and useful contributions will also be tracked.
 
-A [90-day growth plan](docs/LAUNCH-GROWTH-90-DAYS.md) and [KO/EN launch drafts](docs/LAUNCH-COPY.md) are prepared. A separate owner-private bilingual Site preview is deployed; a verified public download, actual usage recording and three public sample projects remain open.
+A [90-day growth plan](docs/LAUNCH-GROWTH-90-DAYS.md) and [KO/EN launch drafts](docs/LAUNCH-COPY.md) are prepared. The site’s app-install button remains disabled. The written quickstart and screenshots do not replace the unfinished 30–60-second usage recording or installation acceptance on another Mac.

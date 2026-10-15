@@ -2,7 +2,7 @@
 
 ## Unreleased — release preparation for 0.7.0, build 8
 
-This is a working-tree change log. It does not announce a published tag or a downloadable signed release. Read [release readiness](docs/RELEASE-READINESS.md) for verified scopes and remaining gates.
+This development changelog does not announce a signed app release. The separate `samples-0.7.0-v2` prerelease contains project/media examples, not the application. Read [release readiness](docs/RELEASE-READINESS.md) for verified scopes and remaining gates.
 
 ### Reliability
 
@@ -19,10 +19,15 @@ This is a working-tree change log. It does not announce a published tag or a dow
 - Add crop-relative ellipse and rectangle mask parameters with center, dimensions, rotation and inward feather. Preserve existing saved ellipse behavior and protect the first save with a retained pre-mask copy. Integration acceptance is tracked separately while editor/UI validation proceeds.
 - Retain the existing multitrack, subtitle/translation, media library, proxy, recovery, transition, blend and generated-media features. This entry does not independently revalidate all existing behavior.
 
+### Caption tools
+
+- Extend the partial-English Auto Captions UI with 65 catalog entries per language: region-policy explanations, evaluation caveats, speaker/channel controls and batch fields. Local full-app compilation, 43 localization checks and a native EN→KO→EN input-state check passed; this changes presentation, not speech recognition accuracy. Public CI now also selects the existing localization suite.
+
 ### Open source and packaging
 
 - Add the root MIT grant, complete pinned Whisper component notices, requested media credits and artwork provenance. Bundle the legal files and expose them through an offline app viewer.
-- Add English and Korean entry documentation and a generated-fixture GitHub Actions workflow. Hosted CI and final public publication are pending.
+- Publish the reviewed source and English/Korean entry documentation. The [main generated-fixture CI](https://github.com/jonghyun0000/JHCutStudio/actions/runs/38773524663) built the full app and passed 138 checks; Python 10/0 and workspace 16/0 passed separately. Current diagnostics retain the verification index and logs, not generated outputs or binaries.
+- Connect the [public bilingual site](https://jhcut-studio.jonghyun04.chatgpt.site), three actual app screenshots and [three MIT starter projects](https://github.com/jonghyun0000/JHCutStudio/releases/tag/samples-0.7.0-v2) with manual captions/generated graphics/test chords. The sample-only prerelease is not an app installer; the install button stays disabled and the usage recording remains unfinished.
 - Retain historical strict startup failures and the remaining raw preAAC buffer-tail finding, absent human speech references, incomplete English UI and unavailable signing/notary/other-Mac acceptance.
 
-Earlier development reports are kept under `docs/`; their dates and results are historical evidence, not release tags. A source commit/tag and package checksum will be recorded with an actual release.
+Earlier development reports are kept under `docs/`; their dates and results are historical evidence, not release tags. An app release will bind its exact source revision and package checksum separately from the already published sample-data tag.
