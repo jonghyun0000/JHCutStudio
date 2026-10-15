@@ -45,7 +45,7 @@ bash Scripts/run.sh
 python3 -B Scripts/verification-run.py --suites domain compatibility productivity
 ```
 
-domain에는 Xcode XCTest가 필요합니다. [공개 CI](.github/workflows/public-generated.yml)는 생성 fixture와 전체 앱 컴파일을 대상으로 하며 실제 hosted 실행은 아직 확인해야 합니다. 기본 전체 목록에는 비공개 실사 평가 입력/모델/언어팩이 필요한 검사가 포함됩니다. 개인 References와 결과 Artifacts는 이 공개 소스 후보에 포함하지 않습니다. private probe의 파일명은 로컬 평가 계약을 설명하며 임의 영상으로 대체해 같은 정확도 결과를 주장할 수 없습니다.
+domain에는 Xcode XCTest가 필요합니다. [공개 CI](.github/workflows/public-generated.yml)는 생성 fixture와 전체 앱 컴파일을 대상으로 합니다. 2026-10-16 KST(2026-10-15 UTC) [PR hosted 검사](https://github.com/jonghyun0000/JHCutStudio/actions/runs/38769007139)에서 전체 앱 빌드와 생성 검사 138개(domain 55, compatibility 46, productivity 37)가 통과했고, Python runner 검사 10개도 별도로 통과했습니다. [검증 범위와 한계](docs/RELEASE-READINESS.md#hosted-ci-evidence), [이후 Actions 결과](https://github.com/jonghyun0000/JHCutStudio/actions/workflows/public-generated.yml)를 확인하세요. 서명된 설치나 음성 인식 정확도를 입증한 결과는 아닙니다. 기본 전체 목록에는 비공개 실사 평가 입력/모델/언어팩이 필요한 검사가 포함됩니다. 개인 References와 결과 Artifacts는 이 공개 소스 후보에 포함하지 않습니다. private probe의 파일명은 로컬 평가 계약을 설명하며 임의 영상으로 대체해 같은 정확도 결과를 주장할 수 없습니다.
 
 사람 정답이 없으므로 실제 음성 정확도 CER/WER와 번역 의미 품질은 점수화하지 않습니다. 자동 테스트 통과를 전체 완성도 점수로 환산하지 않습니다. [35개 요구와 고급 로드맵](docs/GOAL-REQUIREMENTS-2026-10-11.md), [중립 원본 명세](docs/ORIGINAL-PRODUCT-SPEC-2026-10-11.txt), [출시 준비 상태](docs/RELEASE-READINESS.md)를 유지합니다.
 
