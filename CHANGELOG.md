@@ -21,7 +21,7 @@ This development changelog does not announce a signed app release. The separate 
 
 ### Caption tools
 
-- Extend the partial-English Auto Captions UI with 65 catalog entries per language: region-policy explanations, evaluation caveats, speaker/channel controls and batch fields. Local full-app compilation, 43 localization checks and a native EN→KO→EN input-state check passed; this changes presentation, not speech recognition accuracy. Public CI now also selects the existing localization suite.
+- Extend the partial-English Auto Captions UI with 65 catalog entries per language: region-policy explanations, evaluation caveats, speaker/channel controls and batch fields. Local full-app compilation, 43 localization checks and a native EN→KO→EN input-state check passed; this changes presentation, not speech recognition accuracy. Public CI now also selects the existing localization suite. A follow-up adds persistent coverage for all seven caption format keys and count-neutral English; a focused actual-helper run passed 51 checks and rejected a deliberately missing placeholder.
 
 ### Open source and packaging
 
