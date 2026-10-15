@@ -8,7 +8,7 @@ import JHCutCore
 @main struct MultilingualProbe {
  @MainActor static func main() async throws {
   setbuf(stdout, nil); _ = NSApplication.shared
-  let root = URL(fileURLWithPath: CommandLine.arguments.dropFirst().first ?? "Artifacts/Multilingual-0.6", isDirectory: true).standardizedFileURL
+  let root = try ProbeWorkspace.prepare(defaultPath: "Artifacts/Multilingual-0.6")
   try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
   var rows: [[String: Any]] = []
   func check(_ name: String, _ passed: Bool, _ detail: String = "") {
@@ -104,13 +104,21 @@ import JHCutCore
    check("Changing target creates visible English track", model.error == nil && english.count == originals.count && english.allSatisfy { $0.captionMetadata?.language == "en" })
    check("Bilingual mode stores original plus translation", english.filter { $0.captionMetadata?.originalLanguage != "en" }.allSatisfy { $0.title!.text.hasPrefix($0.captionMetadata!.originalText + "\n") })
    model.showOriginalCaptionTracks(); check("Show originals restores originals without deleting translations", model.exportableCaptionClips.count == originals.count && model.exportableCaptionClips.allSatisfy { $0.captionMetadata?.translatedFrom == nil } && model.captionClips.count > originals.count)
-   // Regenerate a source whose original track is hidden: visibility updates must not overwrite new cues.
+   // Re-recognition restores original visibility and retains originals already used by translations.
+   // New stage5 intentionally preserves their IDs so translatedFrom cannot become dangling.
    model.history = EditorHistory(project: captioned); model.translateAfterTranscription = false; model.error = nil
    if let parent = model.project.sequence.tracks.flatMap(\.clips).first(where: { $0.assetID != nil && $0.title == nil }) {
     let priorIDs = Set(originals.filter { $0.connection?.parentID == parent.id }.map(\.id))
     model.selectClip(parent.id); model.transcribeSelection(); try await settle(model)
     let regenerated = model.captionClips.filter { $0.connection?.parentID == parent.id && $0.captionMetadata?.translatedFrom == nil }
-    check("Regeneration on hidden original track keeps new cues", model.error == nil && !regenerated.isEmpty && regenerated.allSatisfy { !priorIDs.contains($0.id) })
+    check("Regeneration retains translated original IDs", model.error == nil && !regenerated.isEmpty && Set(regenerated.map(\.id)) == priorIDs)
+    let priorTranslations=captioned.sequence.tracks.flatMap(\.clips).filter {$0.connection?.parentID == parent.id && $0.captionMetadata?.translatedFrom != nil}
+    check("Regeneration preserves every translation source link",!priorTranslations.isEmpty && priorTranslations.allSatisfy {old in model.captionClips.contains {$0.id == old.id && $0.captionMetadata == old.captionMetadata} } && model.exportableCaptionClips.filter {$0.connection?.parentID == parent.id}.allSatisfy {$0.captionMetadata?.translatedFrom == nil})
+    var withoutTranslations=captioned
+    for i in withoutTranslations.sequence.tracks.indices {withoutTranslations.sequence.tracks[i].clips.removeAll {$0.captionMetadata?.translatedFrom != nil}}
+    model.history=EditorHistory(project:withoutTranslations);model.selectClip(parent.id);model.transcribeSelection();try await settle(model)
+    let fresh=model.captionClips.filter {$0.connection?.parentID == parent.id && $0.captionMetadata?.translatedFrom == nil}
+    check("Unprotected regeneration still creates fresh cues",model.error == nil && !fresh.isEmpty && fresh.allSatisfy {!priorIDs.contains($0.id)})
    }
    // Fault injection tests editor atomicity only; real Apple translations are tested above and below.
    model.history = EditorHistory(project: captioned); model.translationTargetLanguage = "ja"; model.error = nil

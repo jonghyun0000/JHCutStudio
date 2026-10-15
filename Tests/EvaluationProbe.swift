@@ -1,6 +1,7 @@
 import Foundation
 import AppKit
 import AVFoundation
+import Darwin
 import JHCutCore
 
 /// Upgrade 2: transcript-based accuracy evaluation. Pure metric checks, then real Whisper captions
@@ -9,7 +10,7 @@ import JHCutCore
 @main struct EvaluationProbe {
  @MainActor static func main() async throws {
   setbuf(stdout, nil); _ = NSApplication.shared
-  let root = URL(fileURLWithPath: CommandLine.arguments.dropFirst().first ?? "Artifacts/Upgrade-0.7/Evaluation", isDirectory: true).standardizedFileURL
+  let root = try ProbeWorkspace.prepare(defaultPath: "Artifacts/Upgrade-0.7/Evaluation")
   try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
   var rows: [[String: Any]] = []
   func check(_ name: String, _ passed: Bool, _ detail: String = "") {
@@ -22,17 +23,17 @@ import JHCutCore
   typealias E = TranscriptEvaluation
   check("Korean normalisation drops punctuation and full-width forms", E.normalized("안녕하세요, ＡＢＣ！", language: "ko") == "안녕하세요 abc")
   check("Korean CER ignores spacing", E.characters("안녕 하세요", language: "ko") == E.characters("안녕하세요", language: "ko"))
-  let cer = E.editCounts(reference: E.characters("안녕하세요", language: "ko"), hypothesis: E.characters("안녕하새요", language: "ko"))
+  let cer = try E.editCounts(reference: E.characters("안녕하세요", language: "ko"), hypothesis: E.characters("안녕하새요", language: "ko"))
   check("One substitution in five characters is CER 20%", cer.substitutions == 1 && cer.deletions == 0 && cer.insertions == 0 && abs((cer.errorRate ?? 0) - 0.2) < 1e-9)
-  let wer = E.editCounts(reference: E.words("The cat sat on the mat.", language: "en"), hypothesis: E.words("the cat sit on mat", language: "en"))
+  let wer = try E.editCounts(reference: E.words("The cat sat on the mat.", language: "en"), hypothesis: E.words("the cat sit on mat", language: "en"))
   check("English WER counts substitution and deletion", wer.substitutions == 1 && wer.deletions == 1 && wer.insertions == 0 && abs((wer.errorRate ?? 0) - 2.0 / 6.0) < 1e-9, "\(wer)")
-  let ins = E.editCounts(reference: Array("abc"), hypothesis: Array("abxc"))
+  let ins = try E.editCounts(reference: Array("abc"), hypothesis: Array("abxc"))
   check("Insertion counted separately", ins.insertions == 1 && ins.substitutions == 0 && ins.deletions == 0)
   let jaTokens = E.words("今日は公園で動画を撮影しています。", language: "ja")
   check("Japanese words come from a tokenizer, not spaces", jaTokens.count >= 4, jaTokens.joined(separator: "|"))
-  check("Identical Japanese text scores zero WER", E.editCounts(reference: jaTokens, hypothesis: E.words("今日は公園で動画を撮影しています", language: "ja")).errorRate == 0)
+  check("Identical Japanese text scores zero WER", try E.editCounts(reference: jaTokens, hypothesis: E.words("今日は公園で動画を撮影しています", language: "ja")).errorRate == 0)
   check("English normalisation is case-insensitive", E.words("HELLO World", language: "en") == ["hello", "world"])
-  check("Empty reference has no error rate", E.editCounts(reference: [Character](), hypothesis: Array("x")).errorRate == nil)
+  check("Empty reference has no error rate", try E.editCounts(reference: [Character](), hypothesis: Array("x")).errorRate == nil)
 
   // ---- Sentence alignment ----
   let reference = TranscriptReference(url: root.appendingPathComponent("r.srt"), units: [
@@ -41,24 +42,24 @@ import JHCutCore
    .init(text: "카페에서 차를 마십니다.", start: 6, end: 8)])
   let split = [EvaluatedCaption(text: "오늘은 공원에서", start: 0.1, end: 1.5), EvaluatedCaption(text: "영상을 찍습니다.", start: 1.5, end: 3.1),
                EvaluatedCaption(text: "날씨가 정말 좋습니다.", start: 3.6, end: 5.4), EvaluatedCaption(text: "카페에서 차를 마십니다.", start: 6.2, end: 8.0)]
-  let splitReport = E.evaluate(captions: split, reference: reference, language: "ko", sourceRange: 0...8, mediaDuration: 8)
+  let splitReport = try E.evaluate(captions: split, reference: reference, language: "ko", sourceRange: 0...8, mediaDuration: 8)
   check("Sentence split across two captions is not missing+extra", splitReport.missing.isEmpty && splitReport.extra.isEmpty && splitReport.matchedSentences == 3, "\(splitReport.matchedSentences) matched")
   check("Perfect text scores CER 0", splitReport.cer == 0)
   check("Timing error measured from .srt", splitReport.timing != nil && abs((splitReport.timing?.maxAbsoluteStart ?? 1) - 0.2) < 1e-9, "\(String(describing: splitReport.timing))")
   let gaps = [EvaluatedCaption(text: "오늘은 공원에서 영상을 찍습니다.", start: 0, end: 3), EvaluatedCaption(text: "고양이가 노래를 부릅니다 크게.", start: 9, end: 10)]
-  let gapReport = E.evaluate(captions: gaps, reference: reference, language: "ko", sourceRange: 0...10, mediaDuration: 10)
+  let gapReport = try E.evaluate(captions: gaps, reference: reference, language: "ko", sourceRange: 0...10, mediaDuration: 10)
   check("Missing and extra sentences detected", gapReport.missing.count == 2 && gapReport.extra.count == 1, "missing \(gapReport.missing.map(\.text)) extra \(gapReport.extra.map(\.text))")
 
   // ---- “평가 불가” paths ----
-  let none = E.evaluate(captions: split, reference: nil, language: "ko", sourceRange: 0...8, mediaDuration: 8)
+  let none = try E.evaluate(captions: split, reference: nil, language: "ko", sourceRange: 0...8, mediaDuration: 8)
   check("No transcript: unscored and no numbers", none.status == .unscored && none.cer == nil && none.wer == nil && none.timing == nil && (none.reason ?? "").contains("대본 없음"))
   check("Unscored report text says 평가 불가 and shows no CER value", E.markdown(none, title: "x").contains("평가 불가") && !E.markdown(none, title: "x").contains("| CER |"))
   let plain = TranscriptReference(url: root.appendingPathComponent("r.txt"), units: reference.units.map { .init(text: $0.text, start: nil, end: nil) })
-  let partialPlain = E.evaluate(captions: split, reference: plain, language: "ko", sourceRange: 3...8, mediaDuration: 8)
+  let partialPlain = try E.evaluate(captions: split, reference: plain, language: "ko", sourceRange: 3...8, mediaDuration: 8)
   check("Untimed transcript refused for a partial clip", partialPlain.status == .unscored && partialPlain.cer == nil, partialPlain.reason ?? "")
-  let fullPlain = E.evaluate(captions: split, reference: plain, language: "ko", sourceRange: 0...8, mediaDuration: 8)
+  let fullPlain = try E.evaluate(captions: split, reference: plain, language: "ko", sourceRange: 0...8, mediaDuration: 8)
   check("Untimed transcript scores a full clip without timing", fullPlain.status == .scored && fullPlain.timing == nil && fullPlain.cer == 0)
-  let partialTimed = E.evaluate(captions: Array(split.dropFirst(2)), reference: reference, language: "ko", sourceRange: 3.2...8, mediaDuration: 8)
+  let partialTimed = try E.evaluate(captions: Array(split.dropFirst(2)), reference: reference, language: "ko", sourceRange: 3.2...8, mediaDuration: 8)
   check("Timed transcript is restricted to the clip's source range", partialTimed.status == .scored && partialTimed.referenceSentences == 2 && partialTimed.missing.isEmpty)
   check("Plain-text sentence splitting", E.sentences("첫 문장입니다. 두 번째!\n세 번째") == ["첫 문장입니다.", "두 번째!", "세 번째"])
 
@@ -124,6 +125,33 @@ import JHCutCore
  /// Speaks each line separately, places them at known offsets, and writes the exact placement as
  /// the reference `.srt` (plus a `.txt`). Reference times are the clip placement of each line;
  /// the voices' own leading/trailing silence is inside those spans.
+ @MainActor static func synthesize(_ process: Process, to output: URL, root: URL, voice: String) async throws {
+  var attempts: [[String:Any]] = []
+  let log = root.appendingPathComponent("tts-attempts.json")
+  if let data = try? Data(contentsOf:log), let previous = try? JSONSerialization.jsonObject(with:data) as? [[String:Any]] { attempts = previous }
+  defer { try? JSONSerialization.data(withJSONObject:attempts,options:[.prettyPrinted,.sortedKeys]).write(to:log) }
+  for attempt in 1...2 {
+   let child = Process(); child.executableURL=process.executableURL; child.arguments=process.arguments
+   defer { if child.isRunning { child.terminate(); kill(child.processIdentifier,SIGKILL) } }
+   try? FileManager.default.removeItem(at:output)
+   let begun = ProcessInfo.processInfo.systemUptime
+   try child.run()
+   while child.isRunning && ProcessInfo.processInfo.systemUptime-begun < 20 {
+    try Task.checkCancellation(); try await Task.sleep(nanoseconds:50_000_000)
+   }
+   let timedOut = child.isRunning
+   if timedOut {
+    child.terminate(); try await Task.sleep(nanoseconds:100_000_000)
+    if child.isRunning { kill(child.processIdentifier,SIGKILL) }
+   }
+   while child.isRunning { try await Task.sleep(nanoseconds:50_000_000) }
+   let valid = !timedOut && child.terminationStatus == 0 && ((try? AVAudioFile(forReading:output).length) ?? 0) > 0
+   attempts.append(["voice":voice,"file":output.lastPathComponent,"attempt":attempt,"elapsedSeconds":ProcessInfo.processInfo.systemUptime-begun,"timedOut":timedOut,"exitCode":child.terminationStatus,"accepted":valid])
+   if valid { return }
+  }
+  throw ProjectError("System voice fixture failed within bounded retries: " + voice)
+ }
+
  static func makeTimedSpeech(_ root: URL, language: String, voice: String, lines: [String]) async throws -> (URL, URL, URL) {
   let folder = root.appendingPathComponent("Speech-" + language, isDirectory: true)
   let media = folder.appendingPathComponent("\(language)-timed.mp4"), srt = folder.appendingPathComponent("\(language)-timed.srt"), txt = folder.appendingPathComponent("\(language)-timed.txt")
@@ -135,7 +163,7 @@ import JHCutCore
   for (index, line) in lines.enumerated() {
    let audio = folder.appendingPathComponent("line-\(index).aiff")
    let say = Process(); say.executableURL = URL(fileURLWithPath: "/usr/bin/say"); say.arguments = ["-v", voice, "-r", "160", "-o", audio.path, line]
-   try say.run(); say.waitUntilExit(); guard say.terminationStatus == 0 else { throw ProjectError("say failed") }
+   try await synthesize(say, to:audio, root:root, voice:voice)
    let asset = try await MediaImporter.inspect(url: audio)
    project.assets.append(asset)
    project.sequence.tracks[ti].clips.append(Clip(assetID: asset.id, start: at, duration: asset.duration))

@@ -35,7 +35,7 @@ import JHCutCore
     }
 
     static func run() async throws {
-        let folder = URL(fileURLWithPath: CommandLine.arguments.dropFirst().first ?? "Artifacts/Format", isDirectory: true).standardizedFileURL
+        let folder = try ProbeWorkspace.prepare(defaultPath: "Artifacts/Format")
         try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
         let fixtures = try await Fixtures.generate(in: folder.appendingPathComponent("fixtures", isDirectory: true))
         let source = try await MediaImporter.inspect(url: fixtures.videos[0])

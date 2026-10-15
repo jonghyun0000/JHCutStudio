@@ -23,7 +23,8 @@ public enum AudioAutomation {
             let t = (attack * a.1 + release * b.0) / (attack + release)
             if t >= 0 && t <= clip.duration.seconds { times.insert(t) }
         }
-        return times.sorted().map { t in
+        var quantized: [MediaTime: Double] = [:]
+        for t in times.sorted() {
             let value = intervals.reduce(1.0) { current, interval in
                 let (begin, end) = interval
                 let envelope: Double
@@ -32,7 +33,11 @@ public enum AudioAutomation {
                 else { envelope = gain + (1 - gain) * min(1, (t - end) / release) }
                 return min(current, envelope)
             }
-            return GainPoint(time: MediaTime(seconds: t), gain: value)
+            // Floating-point ramp endpoints can differ while mapping to the same stored time.
+            // Keep one conservative envelope value per rational time and the exact clip endpoint.
+            let time = t == clip.duration.seconds ? clip.duration : min(clip.duration, max(.zero, MediaTime(seconds: t)))
+            quantized[time] = min(quantized[time] ?? 1, value)
         }
+        return quantized.keys.sorted().map { GainPoint(time: $0, gain: quantized[$0]!) }
     }
 }

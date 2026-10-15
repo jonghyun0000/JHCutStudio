@@ -79,15 +79,15 @@ enum UpgradeValidation {
                 report.files["advancedProbe"] = URL(fileURLWithPath: "Artifacts/EngineUpgrade/engine-checks.json").standardizedFileURL.path
             } else { report.unrun("Advanced 2 s pixel / pitch probe", "Run Scripts/test-engine.sh Artifacts/EngineUpgrade against this exact built core; missing or stale binary fingerprint prevents reuse of an old result") }
             report.unrun("Interactive 10 minute playback dropped frames", "This CLI decodes exports fully and compares shared preview frames; it does not measure real-time AVPlayer presentation drops")
-            report.unrun("Proxy workflow", "Proxy generation and mapping are not implemented in this upgrade")
-            report.unrun("HEVC / JPEG / HDR / VFR / 4K inputs", "Input expansion remains disabled; tested input is SDR H.264, PNG and native decodable audio")
+            report.unrun("Proxy workflow", "Not exercised by this CLI. Current proxy generation/mapping/integrity require the separately source-bound proxy-integrity and playback suites.")
+            report.unrun("HEVC / JPEG / HDR / VFR / 4K inputs", "Not exercised by this fixture. Tested input here is SDR H.264, PNG and native decodable audio; current format/HDR/4K support needs its separate evidence.")
             report.limitations = [
                 "60-second fixture: 18 source-video clips at 1×, 2× and 0.5×, imported SRT titles with original styles, actual library PNG, music and SFX; effects/fades/keyframes; no cross-dissolve claim.",
                 "600-second fixture: 120 repeated 5-second generated H.264 clips, ten chapter titles, a real library PNG and explicit successive placements of the real music source. It is a low-complexity regression, not a general 10-minute editing performance guarantee.",
                 "Audio source repetitions are separate visible timeline clips, not claimed as an original 600-second recording. AAC padding is reported separately and audio/video ends are compared within 0.10 s.",
                 "Peak RSS covers library validation, fixture generation, composition, export and decoding in this CLI process; it is not isolated application memory.",
                 "Local screenshot/OCR and pixel thresholds demonstrate rendered content; interactive UI and subjective design quality require separate review.",
-                "This report covers the implemented G1 subset. Proxy media and overlapping cross-dissolves are not implemented; no claim of complete G1 is made."
+                "This report covers the implemented G1 subset. This CLI does not exercise proxy media or overlapping cross-dissolves; their separate tests are required. No claim of complete G1 is made."
             ]
             report.passed = !report.checks.contains { $0.status == "failed" }
         } catch {

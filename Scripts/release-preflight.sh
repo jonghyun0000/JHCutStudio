@@ -6,8 +6,25 @@
 set -uo pipefail
 cd "$(dirname "$0")/.."
 bundle="${1:-Build/JH CUT Studio.app}"
-work="$(mktemp -d "${TMPDIR:-/tmp}/jhcut-preflight.XXXXXX")"
-trap 'pkill -f "$work/" 2>/dev/null; rm -rf "$work"' EXIT
+mkdir -p Artifacts/ReleasePreflight
+work="$(mktemp -d "$PWD/Artifacts/ReleasePreflight/run.XXXXXX")"
+owned_hardened_pid=""
+owned_fresh_pid=""
+cleanup() {
+  # Restrict termination to PIDs still reported as live jobs of this shell.
+  local cleanup_pid
+  for cleanup_pid in "$owned_hardened_pid" "$owned_fresh_pid"; do
+    if [[ -n "$cleanup_pid" ]]; then
+      local live_child
+      for live_child in $(jobs -pr); do
+        [[ "$live_child" == "$cleanup_pid" ]] && kill "$cleanup_pid" 2>/dev/null || true
+      done
+      wait "$cleanup_pid" 2>/dev/null || true
+    fi
+  done
+  echo "PREFLIGHT evidence: $work"
+}
+trap cleanup EXIT
 pass=0; fail=0
 ok() { echo "PASS $1 ${2:-}"; pass=$((pass + 1)); }
 bad() { echo "FAIL $1 ${2:-}"; fail=$((fail + 1)); }
@@ -29,6 +46,19 @@ grep -q "JH CUT Studio ${version%.*}" README.md && ok "README names version ${ve
 grep -q "$version" docs/STATUS.md && ok "docs/STATUS.md names $version" || bad "docs/STATUS.md does not name $version"
 [[ -x "$bundle/Contents/Resources/Whisper/whisper-cli" ]] && ok "whisper runtime in bundle" || bad "whisper runtime missing"
 [[ -f "$bundle/Contents/Frameworks/libJHCutCore.dylib" ]] && ok "core library in bundle" || bad "core library missing"
+while IFS='|' read -r notice_source notice_bundle; do
+  if [[ -s "$bundle/Contents/Resources/$notice_bundle" ]] && cmp -s "$notice_source" "$bundle/Contents/Resources/$notice_bundle"; then
+    ok "complete license notice $notice_bundle"
+  else
+    bad "missing or stale license notice $notice_bundle" "rebuild before distribution"
+  fi
+done <<'NOTICES'
+LICENSE|Legal/LICENSE.txt
+THIRD_PARTY_NOTICES.md|Legal/THIRD_PARTY_NOTICES.md
+Resources/Brand/README.md|Legal/BRAND.md
+Resources/Whisper/THIRD-PARTY-NOTICES.txt|Whisper/THIRD-PARTY-NOTICES.txt
+Resources/Library/CREDITS.md|Library/CREDITS.md
+NOTICES
 if find "$bundle" -name 'ggml-*.bin' | grep -q .; then bad "model file bundled" "models are installed by the user, not shipped"; else ok "no speech model inside the bundle (installed with consent)"; fi
 
 # 3. Every Mach-O must be covered by package-release.sh, signed inside-out.
@@ -56,20 +86,38 @@ codesign -dv "$copy" 2>&1 | grep -q 'flags=0x10002(adhoc,runtime)\|runtime' && o
 # ("mapping process and mapped file have different Team IDs") because ad-hoc code has no Team ID.
 # A Developer ID signature gives the app and the dylib the same Team ID; that part can only be
 # confirmed with a real certificate (package-release.sh checks it before submitting).
-"$copy/Contents/MacOS/JHCutStudio" >"$work/hardened.log" 2>&1 & hp=$!; sleep 2; kill $hp 2>/dev/null; wait $hp 2>/dev/null
+"$copy/Contents/MacOS/JHCutStudio" >"$work/hardened.log" 2>&1 & owned_hardened_pid=$!; sleep 2; kill "$owned_hardened_pid" 2>/dev/null; wait "$owned_hardened_pid" 2>/dev/null; owned_hardened_pid=""
 grep -q "different Team IDs" "$work/hardened.log" && note "ad-hoc hardened copy cannot load its dylib (no Team ID) — expected; requires one Developer ID for app and dylib"
 
 # 6. Clean-install simulation: launch an unmodified copy with an EMPTY home (no settings, no model,
 #    no Application Support). CFFIXED_USER_HOME redirects Foundation's user directories.
 fresh="$work/fresh/JH CUT Studio.app"; mkdir -p "$work/fresh"; ditto "$bundle" "$fresh"
-home="$work/fresh-home"; mkdir -p "$home"
-real_support="$HOME/Library/Application Support/JHCutStudio"; before=$(stat -f %m "$real_support" 2>/dev/null || echo none)
-CFFIXED_USER_HOME="$home" "$fresh/Contents/MacOS/JHCutStudio" >"$work/launch.log" 2>&1 &
-pid=$!; sleep 8
-if kill -0 $pid 2>/dev/null; then ok "fresh-home launch stays running for 8 s"; kill $pid; wait $pid 2>/dev/null; else bad "fresh-home launch exited" "$(tail -5 "$work/launch.log")"; fi
-after=$(stat -f %m "$real_support" 2>/dev/null || echo none)
-[[ "$before" == "$after" ]] && ok "real Application Support untouched by the fresh-home launch" || bad "real Application Support changed"
-[[ ! -e "$home/Library/Application Support/JHCutStudio/Models/ggml-base.bin" ]] && ok "no model downloaded on first launch" || bad "a model appeared without consent"
+preflight_home="$work/fresh-home"; mkdir -p "$preflight_home"
+# A separate bundle identifier prevents cfprefsd sharing the real app preference domain.
+/usr/libexec/PlistBuddy -c "Set :CFBundleIdentifier $identifier.preflight.$(uuidgen | tr -d '-')" "$fresh/Contents/Info.plist" || { bad "private preference domain"; exit 1; }
+codesign --force --sign - "$fresh" >"$work/fresh-sign.log" 2>&1 || { bad "fresh copy signing"; exit 1; }
+real_support="$HOME/Library/Application Support/JHCutStudio"
+inventory_roots=("support=$real_support" "preferences=$HOME/Library/Preferences/$identifier.plist")
+for preferences_path in "$HOME/Library/Preferences/ByHost/$identifier."*.plist; do
+  [[ -e "$preferences_path" ]] && inventory_roots+=("$(basename "$preferences_path")=$preferences_path")
+done
+python3 -B Scripts/release_inventory.py "$work/user-before.json" "${inventory_roots[@]}" || { bad "user-data inventory before launch"; exit 1; }
+CFFIXED_USER_HOME="$preflight_home" "$fresh/Contents/MacOS/JHCutStudio" >"$work/launch.log" 2>&1 &
+owned_fresh_pid=$!; sleep 8
+if kill -0 "$owned_fresh_pid" 2>/dev/null; then ok "fresh-home launch stays running for 8 s"; kill "$owned_fresh_pid"; wait "$owned_fresh_pid" 2>/dev/null; else bad "fresh-home launch exited" "$(tail -5 "$work/launch.log")"; wait "$owned_fresh_pid" 2>/dev/null; fi
+owned_fresh_pid=""
+# Re-enumerate ByHost files so newly created real preference files cannot escape detection.
+inventory_roots=("support=$real_support" "preferences=$HOME/Library/Preferences/$identifier.plist")
+for preferences_path in "$HOME/Library/Preferences/ByHost/$identifier."*.plist; do
+  [[ -e "$preferences_path" ]] && inventory_roots+=("$(basename "$preferences_path")=$preferences_path")
+done
+if python3 -B Scripts/release_inventory.py "$work/user-after.json" "${inventory_roots[@]}" && cmp -s "$work/user-before.json" "$work/user-after.json"; then
+  ok "real Application Support and preference contents/identities unchanged"
+else
+  bad "real user-data inventory changed or unverifiable"
+fi
+note "Private-home/private-identifier launch is an 8-second smoke check, not another-user or complete clean-install acceptance."
+[[ ! -e "$preflight_home/Library/Application Support/JHCutStudio/Models/ggml-base.bin" ]] && ok "no model downloaded on first launch" || bad "a model appeared without consent"
 
 # 7. What Gatekeeper says about an ad-hoc build (expected: rejected until Developer ID + notarization).
 if spctl --assess --type execute "$copy" 2>/dev/null; then note "Gatekeeper accepted the ad-hoc copy (unexpected on a default system)"; else note "Gatekeeper rejects the ad-hoc copy as expected; distribution needs Scripts/package-release.sh with a Developer ID identity and a notarytool profile."; fi

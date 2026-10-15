@@ -4,12 +4,14 @@ import JHCutCore
 import UniformTypeIdentifiers
 
 struct EditorView: View {
+    @Environment(\.locale) private var uiLocale
     @ObservedObject var model: EditorModel
     @State private var tab = "미디어"
     @State private var clipPicker = false
     @State private var mediaQuery = ""
 
     var body: some View {
+        let _ = uiLocale.identifier // Re-evaluate dynamic String lookups when the in-app language changes.
         VStack(spacing: 0) {
             VSplitView {
                 HSplitView {
@@ -24,11 +26,14 @@ struct EditorView: View {
         .background(JH.Palette.canvas)
         .tint(JH.Palette.accent)
         .navigationTitle(model.project.name)
-        .navigationSubtitle(model.dirty ? "저장하지 않은 변경사항" : "저장됨")
+        .navigationSubtitle(UIL10n.text(model.dirty ? "저장하지 않은 변경사항" : "저장됨"))
         .toolbar { toolbarItems }
         .alert("작업을 완료하지 못했습니다", isPresented: Binding(get: { model.error != nil }, set: { if !$0 { model.error = nil } })) {
             Button("확인", role: .cancel) { model.error = nil }
-        } message: { Text(model.error ?? "") }
+        } message: { VStack(alignment: .leading, spacing: 8) {
+            Text(model.error ?? "")
+            if UIL10n.language() == "en" { Text("일부 상세 진단과 고급 편집 도구는 한국어로 표시됩니다.") }
+        } }
         .onDrop(of: [.fileURL], isTargeted: nil) { providers in
             Task { @MainActor in
                 var urls: [URL] = []
@@ -52,10 +57,10 @@ struct EditorView: View {
     @ToolbarContentBuilder private var toolbarItems: some ToolbarContent {
         ToolbarItemGroup(placement: .navigation) {
             Button { model.undo() } label: { Image(systemName: "arrow.uturn.backward") }
-                .jhIconLabel("실행취소", hint: "마지막 편집을 되돌립니다 ⌘Z")
+                .jhIconLabel("실행취소", hint: UIL10n.format("ui.undo.hint", model.history.memoryUsage.undoCount))
                 .disabled(!model.history.canUndo || model.isExporting)
             Button { model.redo() } label: { Image(systemName: "arrow.uturn.forward") }
-                .jhIconLabel("재실행", hint: "되돌린 편집을 다시 적용합니다 ⇧⌘Z")
+                .jhIconLabel("재실행", hint: UIL10n.format("ui.redo.hint", model.history.memoryUsage.redoCount))
                 .disabled(!model.history.canRedo || model.isExporting)
         }
         ToolbarItemGroup(placement: .primaryAction) {
@@ -92,7 +97,7 @@ struct EditorView: View {
 
     private var segmentedTabs: some View {
         Picker("라이브러리 구분", selection: $tab) {
-            ForEach(["미디어", "자막", "사운드", "소스"], id: \.self) { Text($0).tag($0) }
+            ForEach(["미디어", "자막", "사운드", "소스"], id: \.self) { Text(UIL10n.text($0)).tag($0) }
         }
         .pickerStyle(.segmented)
         .labelsHidden()
@@ -106,10 +111,10 @@ struct EditorView: View {
                 Text("프로젝트 미디어").font(JH.Font.sectionTitle)
                 Spacer()
                 Text("\(model.project.assets.count)").font(JH.Font.numeric(10)).foregroundStyle(.secondary)
-                    .accessibilityLabel(Text("미디어 \(model.project.assets.count)개"))
+                    .accessibilityLabel(Text(UIL10n.format("ui.media.count", model.project.assets.count)))
             }
             Button { model.chooseMedia() } label: {
-                Label(model.isImporting ? "미디어 분석 중…" : "파일 가져오기", systemImage: "plus").frame(maxWidth: .infinity)
+                Label(UIL10n.text(model.isImporting ? "미디어 분석 중…" : "파일 가져오기"), systemImage: "plus").frame(maxWidth: .infinity)
             }
             .buttonStyle(.jhTool)
             .disabled(model.isImporting || model.isExporting)
@@ -193,7 +198,7 @@ struct EditorView: View {
     private var preview: some View {
         VStack(spacing: 0) {
             HStack(spacing: JH.Space.s) {
-                Text(model.proxyEnabled ? "프록시 미리보기" : "미리보기").font(JH.Font.sectionTitle).foregroundStyle(.secondary)
+                Text(UIL10n.text(model.proxyEnabled ? "프록시 미리보기" : "미리보기")).font(JH.Font.sectionTitle).foregroundStyle(.secondary)
                 Button { model.safeAreaVisible.toggle() } label: {
                     Image(systemName: model.safeAreaVisible ? "viewfinder.circle.fill" : "viewfinder.circle")
                 }
@@ -202,7 +207,7 @@ struct EditorView: View {
                 Spacer()
                 Text("\(model.project.sequence.width) × \(model.project.sequence.height) · \(model.frameRate.label) fps · Rec.709")
                     .font(JH.Font.numeric(10)).foregroundStyle(.tertiary)
-                    .accessibilityLabel(Text("시퀀스 \(model.project.sequence.width) × \(model.project.sequence.height), 초당 \(model.frameRate.label)프레임, Rec.709"))
+                    .accessibilityLabel(Text(UIL10n.format("ui.sequence.description", model.project.sequence.width, model.project.sequence.height, model.frameRate.label)))
             }
             .padding(.horizontal, JH.Space.l)
             .padding(.vertical, JH.Space.m)
@@ -225,7 +230,7 @@ struct EditorView: View {
                 VStack(spacing: JH.Space.m) {
                     Image(systemName: "play.rectangle").font(.system(size: 46, weight: .ultraLight)).foregroundStyle(.tertiary)
                         .accessibilityHidden(true)
-                    Text(model.project.sequence.duration > .zero ? "미디어를 확인하세요" : "나만의 첫 장면을 시작하세요")
+                    Text(UIL10n.text(model.project.sequence.duration > .zero ? "미디어를 확인하세요" : "나만의 첫 장면을 시작하세요"))
                         .font(.system(size: 15, weight: .medium))
                     Text("미디어 가져오기 → 타임라인에 추가").font(JH.Font.label).foregroundStyle(.secondary)
                 }
@@ -265,7 +270,7 @@ struct EditorView: View {
     @ViewBuilder private var inspector: some View {
         VStack(alignment: .leading, spacing: 0) {
             HStack {
-                Text(model.selectedClipIDs.count > 1 ? "속성 · \(model.selectedClipIDs.count)개 선택" : "속성")
+                Text(model.selectedClipIDs.count > 1 ? UIL10n.format("ui.inspector.count", model.selectedClipIDs.count) : UIL10n.text("속성"))
                     .font(JH.Font.sectionTitle)
                 Spacer()
                 Button("프로젝트") { model.selectedClipID = nil; model.selectedClipIDs = [] }
@@ -335,7 +340,7 @@ struct EditorView: View {
                 Slider(value: $model.zoom, in: 12...180)
                     .frame(width: 104)
                     .accessibilityLabel(Text("타임라인 확대"))
-                    .accessibilityValue(Text("초당 \(Int(model.zoom)) 포인트"))
+                    .accessibilityValue(Text(UIL10n.format("ui.zoom.value", Int(model.zoom))))
                 Image(systemName: "plus.magnifyingglass").foregroundStyle(.secondary).accessibilityHidden(true)
             }
         }
@@ -394,17 +399,17 @@ struct EditorView: View {
                             Button { var t = track; t.isLocked.toggle(); model.perform(.updateTrack(t)) } label: {
                                 Image(systemName: track.isLocked ? "lock.fill" : "lock.open")
                             }
-                            .jhIconLabel(track.isLocked ? "\(track.name) 잠금 해제" : "\(track.name) 잠금")
+                            .jhIconLabel(UIL10n.format(track.isLocked ? "ui.track.unlock" : "ui.track.lock", track.name))
                             Button { var t = track; t.isMuted.toggle(); model.perform(.updateTrack(t)) } label: {
                                 Image(systemName: track.isMuted ? "speaker.slash.fill" : "speaker.wave.2")
                             }
-                            .jhIconLabel(track.isMuted ? "\(track.name) 음소거 해제" : "\(track.name) 음소거")
+                            .jhIconLabel(UIL10n.format(track.isMuted ? "ui.track.unmute" : "ui.track.mute", track.name))
                             .disabled(track.isLocked)
                             if track.kind != .audio {
                                 Button { var t = track; t.isHidden.toggle(); model.perform(.updateTrack(t)) } label: {
                                     Image(systemName: track.isHidden ? "eye.slash" : "eye")
                                 }
-                                .jhIconLabel(track.isHidden ? "\(track.name) 보이기" : "\(track.name) 숨기기")
+                                .jhIconLabel(UIL10n.format(track.isHidden ? "ui.track.show" : "ui.track.hide", track.name))
                                 .disabled(track.isLocked)
                             }
                         }
@@ -430,7 +435,7 @@ struct EditorView: View {
         HStack(spacing: JH.Space.s) {
             Circle().fill(statusColor).frame(width: 5, height: 5).accessibilityHidden(true)
             if model.isExporting {
-                Text("영상 출력 중 \(Int(model.exportProgress * 100))%")
+                Text(UIL10n.format("ui.export.progress", Int(model.exportProgress * 100)))
                 ProgressView(value: model.exportProgress).frame(width: 150)
                     .accessibilityLabel(Text("출력 진행률"))
                 Button("취소") { model.cancelExport() }.buttonStyle(.borderless)
@@ -449,10 +454,10 @@ struct EditorView: View {
                     .accessibilityLabel(Text("가져오기 진행률"))
                 if model.importTask != nil { Button("가져오기 취소") { model.cancelImport() }.buttonStyle(.borderless) }
             } else {
-                Text(model.message).lineLimit(1)
+                Text(UIL10n.text(model.message)).lineLimit(1)
             }
             Spacer()
-            Text("JH CUT STUDIO \(Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "개발 빌드") · 로컬 편집").font(JH.Font.micro).foregroundStyle(.tertiary)
+            Text(UIL10n.format("ui.version", Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "dev")).font(JH.Font.micro).foregroundStyle(.tertiary)
         }
         .font(JH.Font.caption)
         .padding(.horizontal, JH.Space.l)
@@ -496,7 +501,7 @@ func spokenTimecode(_ seconds: Double, fps: Double) -> String {
     let rate = max(1, Int((fps).rounded()))
     let frames = max(0, Int((seconds * Double(rate)).rounded()))
     let m = frames / (rate * 60), s = frames / rate % 60, f = frames % rate
-    return m > 0 ? "\(m)분 \(s)초 \(f)프레임" : "\(s)초 \(f)프레임"
+    return m > 0 ? UIL10n.format("ui.time.long", m, s, f) : UIL10n.format("ui.time.short", s, f)
 }
 
 struct PlayerSurface: NSViewRepresentable {
@@ -573,15 +578,17 @@ struct MediaRow: View {
 }
 
 private struct PlaybackTransport: View {
+    @Environment(\.locale) private var uiLocale
     @ObservedObject var model: EditorModel
     @ObservedObject var clock: PlaybackClock
     init(model: EditorModel) { self.model = model; self.clock = model.playbackClock }
     var body: some View {
+        let _ = uiLocale.identifier // Re-evaluate dynamic String lookups when the in-app language changes.
         HStack(spacing: JH.Space.l) {
             Text(timecode(model.playhead, fps: model.fps))
                 .font(JH.Font.timecode).foregroundStyle(JH.Palette.accent)
                 .frame(minWidth: 92, alignment: .leading)
-                .accessibilityLabel(Text("현재 위치 \(spokenTimecode(model.playhead, fps: model.fps))"))
+                .accessibilityLabel(Text(UIL10n.format("ui.position", spokenTimecode(model.playhead, fps: model.fps))))
 
             HStack(spacing: JH.Space.m) {
                 Button { model.seek(0) } label: { Image(systemName: "backward.end.fill") }
@@ -602,14 +609,14 @@ private struct PlaybackTransport: View {
             Text(timecode(model.project.sequence.duration.seconds, fps: model.fps))
                 .font(JH.Font.numeric(11)).foregroundStyle(.secondary)
                 .frame(minWidth: 92, alignment: .trailing)
-                .accessibilityLabel(Text("전체 길이 \(spokenTimecode(model.project.sequence.duration.seconds, fps: model.fps))"))
+                .accessibilityLabel(Text(UIL10n.format("ui.duration", spokenTimecode(model.project.sequence.duration.seconds, fps: model.fps))))
         }
         .buttonStyle(.plain)
         .padding(.horizontal, JH.Space.l)
         .padding(.vertical, JH.Space.s)
         .jhSurface(.floating, in: Capsule(), interactive: true)
         .padding(.vertical, JH.Space.m)
-        .disabled(!model.playing && (model.isBuilding || model.isExporting))
+        .disabled(!model.playing && model.isBuilding)
         .accessibilityElement(children: .contain)
         .accessibilityLabel(Text("재생 컨트롤"))
     }

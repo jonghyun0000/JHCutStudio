@@ -11,8 +11,25 @@
     "backend": "CPU + Apple Accelerate; Metal disabled; static ggml/whisper; no curl backend",
     "buildType": "Release",
     "cmake": "4.1.3",
-    "binaryBytes": 2518344,
-    "unsignedBinarySHA256": "4fa74953727faadbff4e49e1a828e96e05942ba87e31d14a9675de74a783070e"
+    "binaryBytes": 2485288,
+    "unsignedBinarySHA256": "3faf85760669594873e1641e481ef83bd6a8e23a0b473a98a3704df26bfea857",
+    "binaryHashScope": "Pre-app-bundle executable bytes, including the compiler/linker ad-hoc signature; app bundle signing produces a separate hash.",
+    "binarySignature": "linker-ad-hoc",
+    "buildRecipeVersion": 3,
+    "sourceVersionReported": "1.9.4-dev",
+    "sourcePathMapping": "canonical owned work root -> /jhcut-build for C/C++ file, macro and debug prefixes",
+    "compiler": "Apple clang version 21.0.0 (clang-2100.1.1.101)",
+    "sdk": "26.5",
+    "cpuTarget": {
+      "policy": "GGML_NATIVE=OFF; GGML_CPU_ARM_ARCH=armv8.2-a+fp16; GGML_CPU_ALL_VARIANTS=OFF",
+      "architecture": "arm64",
+      "isa": "armv8.2-a+fp16",
+      "compilerFlags": [
+        "-march=armv8.2-a+fp16"
+      ],
+      "nativeOptimization": false,
+      "supportScope": "ISA target tested only on the current Mac. Other Macs and OS versions remain unverified."
+    }
   },
   "model": {
     "name": "Whisper base multilingual (Korean)",

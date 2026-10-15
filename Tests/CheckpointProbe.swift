@@ -10,7 +10,7 @@ import JHCutCore
 
  @MainActor static func main() async throws {
   setbuf(stdout, nil); _ = NSApplication.shared
-  let root = URL(fileURLWithPath: CommandLine.arguments.dropFirst().first ?? "Artifacts/Upgrade-0.7/Checkpoint", isDirectory: true).standardizedFileURL
+  let root = try ProbeWorkspace.prepare(defaultPath: "Artifacts/Upgrade-0.7/Checkpoint")
   try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
   var rows: [[String: Any]] = []
   func check(_ name: String, _ passed: Bool, _ detail: String = "") {
@@ -69,9 +69,8 @@ import JHCutCore
   check("Resume reuses finished windows", resumed.reusedWindows == afterA.count, "reused \(resumed.reusedWindows ?? -1), computed \(resumed.computedWindows ?? -1)")
   check("Resume recognises only the remaining windows", resumed.computedWindows == key.windowCount - afterA.count)
   check("All windows stored after resume", store.completedWindows(for: key).count == key.windowCount)
-  // Mirror the assembly rule: a later window drops cues in its first 0.5s (they belong to the
-  // previous window's tail); everything else from disk must come back byte-for-byte.
-  let reusedCues = afterA.values.flatMap { w in w.cues.filter { $0.start.seconds >= w.sourceStart.seconds + (w.index == 0 ? 0 : 0.5) } }
+  // Every completed non-overlapping window cue must survive, including its first 0.5 seconds.
+  let reusedCues = afterA.values.flatMap(\.cues)
   check("Reused cues appear unchanged in the resumed result", !reusedCues.isEmpty && reusedCues.allSatisfy { resumed.cues.contains($0) }, "\(reusedCues.count) cues from disk")
   etaBox.lock.lock(); let etas = etaBox.etaSeen; etaBox.lock.unlock()
   check("Estimate appears after this run recognises a window", etas.contains { $0 != nil })
@@ -90,6 +89,8 @@ import JHCutCore
   let firstDiff = zip(reference.cues, full.cues).enumerated().first { $0.element.0.text != $0.element.1.text || abs($0.element.0.start.seconds - $0.element.1.start.seconds) >= 0.01 }
   check("Interrupted+resumed captions match an uninterrupted run", sameText && sameTimes && reference.cues.count == full.cues.count,
         "\(full.cues.count) vs \(reference.cues.count) cues" + (firstDiff.map { " · first difference #\($0.offset): '\($0.element.1.text)'@\($0.element.1.start.seconds) vs '\($0.element.0.text)'@\($0.element.0.start.seconds)" } ?? ""))
+
+  check("Resumed normalized SRT equals uninterrupted SRT", try SRTCodec.serialize(reference.cues) == SRTCodec.serialize(full.cues))
 
   // ---- Keys that must not share windows. ----
   var otherOptions = options; otherOptions.glossary = "공원"
@@ -115,10 +116,12 @@ import JHCutCore
   // Tampered manifest in the right folder.
   let manifest = store.directory(for: key).appendingPathComponent("manifest.json")
   let original = try Data(contentsOf: manifest)
+  let manifestBackup = root.appendingPathComponent("valid-manifest-fixture")
+  try FileManager.default.copyItem(at:store.directory(for:key),to:manifestBackup)
   var tampered = try JSONSerialization.jsonObject(with: original) as! [String: Any]; tampered["projectID"] = UUID().uuidString
   try JSONSerialization.data(withJSONObject: tampered).write(to: manifest)
   check("Manifest for another key is ignored", store.completedWindows(for: key).isEmpty)
-  try original.write(to: manifest)
+  try FileManager.default.copyItem(at:manifestBackup,to:store.directory(for:key))
 
   // Damaged window: removed, then recognised again.
   let damaged = store.directory(for: key).appendingPathComponent("window-00001.json")
@@ -131,8 +134,9 @@ import JHCutCore
   // Out-of-range cue in a stored window is rejected.
   var bogus = store.completedWindows(for: key)[2]!
   bogus.cues = [CaptionCue(start: MediaTime(seconds: 9_999), duration: MediaTime(seconds: 1), text: "범위 밖")]
-  try store.save(bogus, for: key)
-  check("Stored cue outside the clip range is rejected", store.completedWindows(for: key)[2] == nil)
+  var rejected = false
+  do { try store.save(bogus,for:key) } catch { rejected = true }
+  check("Out-of-range cue rejected before saving, valid window preserved", rejected && store.completedWindows(for:key)[2] != nil)
   _ = try await LocalTranscription.transcribeLong(url: working, duration: duration, configuration: configuration, options: options, windowSeconds: window, checkpoint: session)
 
   // Summaries and deletion.
@@ -172,7 +176,7 @@ import JHCutCore
   while model.productivityBusy { try await Task.sleep(nanoseconds: 50_000_000) }
   check("Editor cancel keeps document unchanged", model.project == project)
   check("Editor cancel reports preserved windows", model.message.contains("체크포인트에 보존"), model.message)
-  model.refreshCheckpointSummaries()
+  model.refreshCheckpointSummaries(); await model.checkpointRefreshTask?.value
   check("Panel sees resumable checkpoint for the selection", !model.selectedClipCheckpoints.isEmpty && model.selectedClipCheckpoints[0].completedWindows < model.selectedClipCheckpoints[0].totalWindows)
 
   model.transcribeSelection()

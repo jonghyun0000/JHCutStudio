@@ -16,3 +16,9 @@ Backups/
 # macOS metadata. exFAT volumes accumulate AppleDouble sidecars.
 .DS_Store
 ._*
+__pycache__/
+
+# Private evaluation inputs and maintainer-only local notes.
+References/
+docs/private/
+CLAUDE.local.md

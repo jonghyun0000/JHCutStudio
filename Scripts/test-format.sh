@@ -2,8 +2,9 @@
 set -euo pipefail
 JHCUT_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$JHCUT_ROOT"
+source Scripts/probe-common.sh
 # Set JHCUT_FORMAT_BUILD to an isolated core to compare two engine revisions with one probe.
-JHCUT_FORMAT_BUILD="${JHCUT_FORMAT_BUILD:-$JHCUT_ROOT/Build}"
+JHCUT_FORMAT_BUILD="${JHCUT_FORMAT_BUILD:-$build_dir}"
 if [[ ! -f "$JHCUT_FORMAT_BUILD/JHCutCore.swiftmodule" || ! -f "$JHCUT_FORMAT_BUILD/libJHCutCore.dylib" ]]; then
   echo "Core module is missing in $JHCUT_FORMAT_BUILD." >&2; exit 1
 fi
@@ -15,6 +16,6 @@ if [[ ! -d "$JHCUT_TEST_SDK" ]]; then JHCUT_TEST_SDK="$(xcrun --show-sdk-path)";
 "$JHCUT_TOOLCHAIN/swiftc" -swift-version 5 -target "$(uname -m)-apple-macos14.0" -sdk "$JHCUT_TEST_SDK" -O -g \
   -parse-as-library -I "$JHCUT_FORMAT_BUILD" -L "$JHCUT_FORMAT_BUILD" -lJHCutCore \
   -Xlinker -rpath -Xlinker @executable_path \
-  Validation/Fixtures.swift Validation/MediaInspection.swift Tests/FormatProbe.swift \
+  Validation/Fixtures.swift Validation/MediaInspection.swift Tests/ProbeWorkspace.swift Tests/FormatProbe.swift \
   -o "$JHCUT_FORMAT_BUILD/FormatProbe"
 exec "$JHCUT_FORMAT_BUILD/FormatProbe" "${1:-$JHCUT_ROOT/Artifacts/Format}" 

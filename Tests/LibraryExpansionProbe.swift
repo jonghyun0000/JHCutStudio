@@ -54,6 +54,7 @@ import JHCutCore
         project.sequence.width = 640; project.sequence.height = 360
         project.assets = [media]; project.sequence.tracks[0].clips = [Clip(assetID: media.id, duration: MediaTime(seconds: 6))]
         let model = EditorModel(recoveryStore: RecoveryStore(directory: root.appendingPathComponent("library-probe-recovery")))
+        model.libraryMediaStore = LibraryMediaStore(directory: root.appendingPathComponent("LibraryMedia"))
         model.bundledLibrary = library
         func settle() async throws {
             for _ in 0..<1200 {

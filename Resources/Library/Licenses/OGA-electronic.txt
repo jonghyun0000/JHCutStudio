@@ -6,3 +6,8 @@ License URL: https://creativecommons.org/publicdomain/zero/1.0/
 Download: https://opengameart.org/sites/default/files/Techno_5_0.mp3
 Reviewed: 2026-09-20
 No preview images or unrelated page assets are redistributed.
+
+Normalization reviewed: 2026-10-11
+The official MP3 source is unchanged (SHA-256 43c498f047022eeb7bd281b83d4ce848dc0a542b0e36bb69880e96231a624f65). Its gapless length reports 4,743,310 frames, while native decoding reaches EOF after 4,742,112 frames at 48 kHz.
+The catalog now uses electronic.wav, converted with macOS afconvert to 32-bit float PCM. All 4,742,112 available decoded frames per channel were compared: zero changed samples, maximum difference 0. Correct duration: 98.794 seconds. No missing samples were invented.
+The previous electronic.mp3 is retained at its original path for existing project references; it is no longer offered by the catalog. Source author, CC0 license, download URL and source hash remain unchanged.

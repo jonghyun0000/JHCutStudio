@@ -6,7 +6,7 @@ import JHCutCore
 @main struct LanguageProbe {
  @MainActor static func main() async throws {
   setbuf(stdout, nil); _ = NSApplication.shared
-  let root = URL(fileURLWithPath: CommandLine.arguments.dropFirst().first ?? "Artifacts/Upgrade-0.7/Language", isDirectory: true).standardizedFileURL
+  let root = try ProbeWorkspace.prepare(defaultPath: "Artifacts/Upgrade-0.7/Language")
   try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
   var rows: [[String: Any]] = []
   func check(_ name: String, _ passed: Bool, _ detail: String = "") { rows.append(["name": name, "passed": passed, "detail": detail]); print("\(passed ? "PASS" : "FAIL") \(name) \(detail)") }
@@ -74,10 +74,33 @@ import JHCutCore
   check("Re-recognition preserves hand-set language", kept.count == 1 && kept.first?.captionMetadata?.language == "en" && kept.first?.title?.text == target.title?.text)
   check("Re-recognition does not duplicate the preserved sentence", model.captionClips.filter { $0.captionMetadata?.translatedFrom == nil && $0.start < target.end && $0.end > target.start }.count == 1)
 
-  // ---- Per-sentence translation groups with the real translator ----
+  // Stage6 requires uncertain source languages to be reviewed before translation.
+  // Fixture review uses the scheduled, known synthetic utterance ranges, never ASR-as-truth.
   model.translationTargetLanguage = "ko"
-  model.translateCaptionTracks(); while model.productivityBusy { try await Task.sleep(nanoseconds: 50_000_000) }
+  let review = model.captionClips.filter { $0.captionMetadata?.translatedFrom == nil && $0.captionMetadata?.languageNeedsReview == true && $0.captionMetadata?.languageManual != true }
+  if !review.isEmpty {
+   let beforeReview = model.project; model.error = nil
+   model.translateCaptionTracks(); while model.productivityBusy { try await Task.sleep(nanoseconds: 50_000_000) }
+   check("Unreviewed mixed-language translation is atomic and blocked", model.project == beforeReview && model.error?.contains("원문 언어 확인") == true)
+  }
+  let ranges = try JSONSerialization.jsonObject(with: Data(contentsOf: root.appendingPathComponent("known-synthetic-languages.json"))) as! [[String: Any]]
+  var decisions: [[String: Any]] = []
+  for cue in review {
+   let overlaps = ranges.map { range -> (String, Double) in
+    let start = range["start"] as! Double, end = range["end"] as! Double
+    return (range["language"] as! String, max(0, min(cue.end.seconds, end) - max(cue.start.seconds, start)))
+   }
+   guard let best = overlaps.max(by: { $0.1 < $1.1 }), best.1 / cue.duration.seconds >= 0.8 else {
+    decisions.append(["id": cue.id.uuidString, "action": "withheld_ambiguous_range"]); continue
+   }
+   model.setCaptionLanguage([cue.id], to: best.0)
+   decisions.append(["id": cue.id.uuidString, "language": best.0, "action": "explicit_synthetic_fixture_language", "source": "known scheduled TTS utterance (not human review)"])
+  }
+  try JSONSerialization.data(withJSONObject: decisions, options: [.prettyPrinted, .sortedKeys]).write(to: root.appendingPathComponent("synthetic-language-review.json"))
+  let confirmed = Set(model.captionClips.filter { $0.captionMetadata?.translatedFrom == nil && ($0.captionMetadata?.languageNeedsReview != true || $0.captionMetadata?.languageManual == true) }.map(\.id))
+  model.error = nil; model.translateCaptionTracks(scope: .selected(confirmed)); while model.productivityBusy { try await Task.sleep(nanoseconds: 50_000_000) }
   let translations = model.captionClips.filter { $0.captionMetadata?.translatedFrom != nil }
+  check("Confirmed translation scope excludes ambiguous source cues", !translations.isEmpty && translations.allSatisfy { $0.captionMetadata?.translatedFrom.map { confirmed.contains($0) } == true })
   let sources = Set(translations.compactMap { $0.captionMetadata?.originalLanguage })
   check("Translation grouped by each sentence's language", model.error == nil && sources.count >= 2 && model.message.contains("문장별 원문 언어"), model.error ?? model.message)
   check("Hand-set sentence translated from its chosen language", translations.first { $0.captionMetadata?.translatedFrom == kept.first?.id }?.captionMetadata?.originalLanguage == "en")
@@ -99,15 +122,17 @@ import JHCutCore
   if FileManager.default.fileExists(atPath: output.path) { return output }
   var p = Project(name: "mixed"); p.sequence.width = 640; p.sequence.height = 360
   let ti = p.sequence.tracks.firstIndex { $0.kind == .audio }!
-  var at = MediaTime(seconds: 0.3)
-  for (i, (_, voice, text)) in lines.enumerated() {
+  var at = MediaTime(seconds: 0.3); var ranges: [[String: Any]] = []
+  for (i, (language, voice, text)) in lines.enumerated() {
    let audio = root.appendingPathComponent("mixed-\(i).aiff")
    let say = Process(); say.executableURL = URL(fileURLWithPath: "/usr/bin/say"); say.arguments = ["-v", voice, "-r", "160", "-o", audio.path, text]
    try say.run(); say.waitUntilExit()
    let a = try await MediaImporter.inspect(url: audio); p.assets.append(a)
+   ranges.append(["language": language, "start": at.seconds, "end": (at + a.duration).seconds, "text": text, "voice": voice])
    p.sequence.tracks[ti].clips.append(Clip(assetID: a.id, start: at, duration: a.duration)); at = at + a.duration + MediaTime(seconds: 1)
   }
   try await ExportJob().export(plan: TimelineRenderer.build(project: p), to: output) { _ in }
+  try JSONSerialization.data(withJSONObject: ranges, options: [.prettyPrinted, .sortedKeys]).write(to: root.appendingPathComponent("known-synthetic-languages.json"))
   return output
  }
 }

@@ -13,6 +13,14 @@ public enum VoiceActivityKind: String, Codable, Sendable, CaseIterable {
     }
 }
 
+/// Conservative skips energy-confirmed silence only; fast additionally skips classifier-
+/// labelled music/noise. Neither deletes a candidate merely because it is shorter than 4s.
+public enum VoiceActivityPolicy: String, Codable, Sendable, CaseIterable {
+    case conservative, fast
+    public var label: String { self == .conservative ? "누락 최소화" : "빠른 인식" }
+    public var detail: String { self == .conservative ? "무음만 줄이고 음악·소음 속 짧은 말도 인식합니다." : "음악·소음도 줄입니다. 섞인 대사가 누락될 수 있어 원음 검토가 필요합니다." }
+}
+
 public struct VoiceActivitySegment: Codable, Equatable, Sendable {
     public var kind: VoiceActivityKind
     /// Absolute source seconds.
@@ -24,42 +32,76 @@ public struct VoiceActivitySegment: Codable, Equatable, Sendable {
 }
 
 public struct VoiceActivityReport: Codable, Equatable, Sendable {
-    public static let version = 1
+    public static let version = 3
     public var version = VoiceActivityReport.version
     public var sourceStart: Double
     public var duration: Double
     public var segments: [VoiceActivitySegment]
-    /// Regions Whisper must hear: speech and uncertain audio, padded and merged. Absolute seconds.
+    /// Regions Whisper must hear under the chosen policy, padded and merged. Absolute seconds.
     public var speechRegions: [ClosedRange<Double>]
     /// False when the system sound classifier could not run; then only silence is detected.
     public var classifierAvailable: Bool
     public var analysisSeconds: Double
+    public var policy: VoiceActivityPolicy
+    public var requestedChannel: Int
+    public var channelSelection: AudioChannelSelection?
 
     public func seconds(of kind: VoiceActivityKind) -> Double { segments.filter { $0.kind == kind }.reduce(0) { $0 + $1.duration } }
     public var speechRegionSeconds: Double { speechRegions.reduce(0) { $0 + ($1.upperBound - $1.lowerBound) } }
     /// Share of the analysed range that does not need recognition.
     /// Confidently classified speech (absolute seconds): what coverage repair looks for.
-    public var confidentSpeech: [ClosedRange<Double>] { segments.filter { $0.kind == .speech && $0.confidence >= CoverageRepair.evidenceConfidence }.map { $0.start...$0.end } }
+    public var confidentSpeech: [ClosedRange<Double>] { segments.filter { $0.kind == .speech && $0.confidence.isFinite && $0.confidence >= CoverageRepair.evidenceConfidence && $0.start.isFinite && $0.end.isFinite && $0.end > $0.start }.map { $0.start...$0.end } }
     public var skippableShare: Double { duration > 0 ? max(0, 1 - speechRegionSeconds / duration) : 0 }
 
-    enum CodingKeys: String, CodingKey { case version, sourceStart, duration, segments, regions, classifierAvailable, analysisSeconds }
+    enum CodingKeys: String, CodingKey { case version, sourceStart, duration, segments, regions, classifierAvailable, analysisSeconds, policy, requestedChannel, channelSelection }
     struct Region: Codable { var start: Double; var end: Double }
-    public init(sourceStart: Double, duration: Double, segments: [VoiceActivitySegment], speechRegions: [ClosedRange<Double>], classifierAvailable: Bool, analysisSeconds: Double) {
+    public init(sourceStart: Double, duration: Double, segments: [VoiceActivitySegment], speechRegions: [ClosedRange<Double>], classifierAvailable: Bool, analysisSeconds: Double, policy: VoiceActivityPolicy = .conservative, requestedChannel: Int = -1, channelSelection: AudioChannelSelection? = nil) {
         self.sourceStart = sourceStart; self.duration = duration; self.segments = segments; self.speechRegions = speechRegions
         self.classifierAvailable = classifierAvailable; self.analysisSeconds = analysisSeconds
+        self.policy = policy; self.requestedChannel = requestedChannel; self.channelSelection = channelSelection
     }
     public init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
         version = try c.decode(Int.self, forKey: .version); sourceStart = try c.decode(Double.self, forKey: .sourceStart)
-        duration = try c.decode(Double.self, forKey: .duration); segments = try c.decode([VoiceActivitySegment].self, forKey: .segments)
-        speechRegions = try c.decode([Region].self, forKey: .regions).map { $0.start...$0.end }
+        duration = try c.decode(Double.self, forKey: .duration); segments = try RecognitionCacheSafety.array(VoiceActivitySegment.self, key:"segments", decoder:decoder, maximum:RecognitionCacheSafety.maximumSegments)
+        let regions = try RecognitionCacheSafety.array(Region.self, key:"regions", decoder:decoder, maximum:RecognitionCacheSafety.maximumRegions)
+        guard regions.allSatisfy({ $0.start.isFinite && $0.end.isFinite && $0.start <= $0.end }) else { throw DecodingError.dataCorruptedError(forKey: .regions, in: c, debugDescription: "Invalid VAD region") }
+        speechRegions = regions.map { $0.start...$0.end }
+        policy = try c.decodeIfPresent(VoiceActivityPolicy.self, forKey: .policy) ?? .fast
+        requestedChannel = try c.decodeIfPresent(Int.self, forKey: .requestedChannel) ?? -1
+        channelSelection = try c.decodeIfPresent(AudioChannelSelection.self, forKey: .channelSelection)
         classifierAvailable = try c.decode(Bool.self, forKey: .classifierAvailable); analysisSeconds = try c.decode(Double.self, forKey: .analysisSeconds)
+        guard isValid else { throw ProjectError("말소리 분석 캐시의 범위·정렬·채널·숫자가 올바르지 않습니다.") }
+    }
+    public var estimatedBytes: Int { 256 + segments.count * 80 + speechRegions.count * 32 }
+    public var isValid: Bool {
+        guard (1...Self.version).contains(version), sourceStart.isFinite, sourceStart >= 0, sourceStart <= RecognitionCacheSafety.maximumStart,
+              duration.isFinite, duration > 0, duration <= RecognitionCacheSafety.maximumDuration,
+              analysisSeconds.isFinite, analysisSeconds >= 0, analysisSeconds <= 604_800,
+              (-1...31).contains(requestedChannel), segments.count <= RecognitionCacheSafety.maximumSegments, speechRegions.count <= RecognitionCacheSafety.maximumRegions,
+              version < 3 || channelSelection?.matches(requestedChannel:requestedChannel) == true else { return false }
+        let end = sourceStart + duration
+        var previous = sourceStart
+        for s in segments {
+            guard s.start.isFinite, s.end.isFinite, s.confidence.isFinite, (0...1).contains(s.confidence), s.start >= previous - 0.0001,
+                  s.start >= sourceStart - 0.0001, s.end > s.start, s.end <= end + 0.0001 else { return false }
+            previous = s.end
+        }
+        previous = sourceStart
+        for r in speechRegions {
+            guard r.lowerBound.isFinite, r.upperBound.isFinite, r.lowerBound >= previous - 0.0001,
+                  r.lowerBound >= sourceStart - 0.0001, r.upperBound > r.lowerBound, r.upperBound <= end + 0.0001 else { return false }
+            previous = r.upperBound
+        }
+        return !segments.isEmpty
     }
     public func encode(to encoder: Encoder) throws {
         var c = encoder.container(keyedBy: CodingKeys.self)
         try c.encode(version, forKey: .version); try c.encode(sourceStart, forKey: .sourceStart); try c.encode(duration, forKey: .duration)
         try c.encode(segments, forKey: .segments); try c.encode(speechRegions.map { Region(start: $0.lowerBound, end: $0.upperBound) }, forKey: .regions)
         try c.encode(classifierAvailable, forKey: .classifierAvailable); try c.encode(analysisSeconds, forKey: .analysisSeconds)
+        try c.encode(policy, forKey: .policy); try c.encode(requestedChannel, forKey: .requestedChannel)
+        try c.encodeIfPresent(channelSelection, forKey: .channelSelection)
     }
 }
 
@@ -71,24 +113,18 @@ public struct SilentCaptionWarning: Equatable, Sendable {
 }
 
 /// Voice-activity analysis with the classifier built into macOS (SoundAnalysis `version1`, part of
-/// the OS — nothing is downloaded) plus a signal-level silence detector. Reads the source once,
-/// read-only.
+/// the OS — nothing is downloaded) plus a signal-level silence detector. Two read-only streaming
+/// passes select native channels, then classify exactly the same mono signal ASR hears.
 public enum VoiceActivity {
     public static let windowSeconds = 1.5
     public static let hopSeconds = 0.75
-    /// Lowest silence threshold. The actual threshold is the recording's 10th-percentile level + 8 dB,
-    /// kept within [−50, −35] dBFS; a slot is silence only when every 50 ms block in it is below it.
+    /// Fast-mode lower silence threshold: recording floor + 8 dB, clamped to [−50, −35].
+    /// Conservative uses −60 dBFS. Every 50 ms block in a slot must be below the threshold.
     public static let silenceDBFS = -50.0
     /// Non-speech shorter than this stays inside the speech regions (pauses between sentences).
     public static let minimumSkipSeconds = 3.0
     /// Padding kept around every speech region so word edges are never clipped.
     public static let paddingSeconds = 0.5
-    /// Longest uncertain wobble bridged inside a non-speech run.
-    public static let maximumBridgeSeconds = 0.8
-    /// Regions shorter than this with music/noise on both sides are not recognised (song fragments).
-    public static let minimumIsolatedRegionSeconds = 4.0
-    /// A single speech slot below this confidence inside music is treated as part of the music.
-    public static let weakSpeechConfidence = 0.6
     /// Singing is music for captioning purposes: lyrics are not dialogue and Whisper garbles them.
     static let singingLabels: Set<String> = ["singing", "choir_singing", "humming", "rapping", "yodeling", "chant", "whistling"]
     static let speechLabels: Set<String> = ["speech", "shout", "yell", "whispering", "children_shouting", "battle_cry", "screaming", "laughter"]
@@ -101,9 +137,12 @@ public enum VoiceActivity {
     struct Window { var start: Double; var end: Double; var speech: Double; var singing: Double; var music: Double; var noise: Double; var silenceLabel: Double; var dbfs: Double; var zcr: Double }
 
     public static func analyze(url: URL, sourceStart: MediaTime, duration: MediaTime,
-                               useClassifier: Bool = true, progress: (@Sendable (Double) -> Void)? = nil) async throws -> VoiceActivityReport {
-        guard duration > .zero else { throw AudioAnalysisError("음성 구간 분석 범위를 확인하세요.") }
+                               useClassifier: Bool = true, preferredChannel: Int = -1, policy: VoiceActivityPolicy = .conservative, progress: (@Sendable (Double) -> Void)? = nil) async throws -> VoiceActivityReport {
+        guard duration > .zero, duration.seconds <= RecognitionCacheSafety.maximumDuration, sourceStart >= .zero, sourceStart.seconds <= RecognitionCacheSafety.maximumStart else { throw AudioAnalysisError("음성 구간 분석은 24시간 이내의 유효한 원본 범위를 선택하세요.") }
         let begun = Date()
+        progress?(0)
+        let selection = try await AudioChannelSelection.resolve(url: url, sourceStart: sourceStart, duration: duration, preferredChannel: preferredChannel) { progress?($0 * 0.15) }
+        var lastProgress = 0.15
         final class Collector: NSObject, SNResultsObserving, @unchecked Sendable {
             var results: [(start: Double, end: Double, labels: [String: Double])] = []
             var failure: Error?
@@ -118,7 +157,7 @@ public enum VoiceActivity {
         let collector = Collector()
         var analyzer: SNAudioStreamAnalyzer?, format: AVAudioFormat?, classifierOK = useClassifier
         var position: AVAudioFramePosition = 0
-        // Energy per 50 ms block (dBFS of the channel mix), used for silence and loudness.
+        // Energy per 50 ms block of the same phase-safe signal that ASR hears.
         var blockEnergy: [Double] = [], blockCrossings: [Int] = [], blockSum = 0.0, blockCount = 0, blockCross = 0, blockSize = 0, rate = 0.0, previous: Float = 0
         let total = duration.seconds
         _ = try await SourcePCM.readStable(url: url, sourceStart: sourceStart, duration: duration) { chunk in
@@ -139,22 +178,21 @@ public enum VoiceActivity {
             }
             guard let format, let buffer = AVAudioPCMBuffer(pcmFormat: format, frameCapacity: AVAudioFrameCount(n)) else { return }
             buffer.frameLength = AVAudioFrameCount(n)
-            let out = buffer.floatChannelData![0], scale = 1 / Float(chunk.channels)
+            let out = buffer.floatChannelData![0], mono = try selection.mono(chunk)
             for i in 0..<n {
-                var s: Float = 0
-                for c in 0..<chunk.channels { s += chunk.values[i * chunk.channels + c] }
-                s *= scale; out[i] = s
+                let s = mono[i]; out[i] = s
                 blockSum += Double(s * s); blockCount += 1
                 if (s >= 0) != (previous >= 0) { blockCross += 1 }
                 previous = s
                 if blockCount == blockSize { blockEnergy.append(blockSum / Double(blockCount)); blockCrossings.append(blockCross); blockSum = 0; blockCount = 0; blockCross = 0 }
             }
             analyzer?.analyze(buffer, atAudioFramePosition: position); position += AVAudioFramePosition(n)
-            progress?(min(1, chunk.start - sourceStart.seconds + Double(n) / rate) / total)
+            let fraction = AudioAnalysisProgress.fraction(elapsed: chunk.start - sourceStart.seconds + Double(n) / rate, total: total)
+            lastProgress = max(lastProgress, min(0.99, 0.15 + 0.85 * fraction)); progress?(lastProgress)
         }
         if blockCount > 0 { blockEnergy.append(blockSum / Double(blockCount)); blockCrossings.append(blockCross) }
         analyzer?.completeAnalysis()
-        if collector.failure != nil || (classifierOK && collector.results.isEmpty && total >= windowSeconds) { classifierOK = false }
+        if collector.failure != nil || (classifierOK && collector.results.isEmpty) { classifierOK = false }
         func dbfs(_ from: Double, _ to: Double) -> Double {
             let a = max(0, Int(from / 0.05)), b = min(blockEnergy.count, max(a + 1, Int((to / 0.05).rounded(.up))))
             guard a < b else { return -120 }
@@ -172,11 +210,10 @@ public enum VoiceActivity {
             guard a < b, blockSize > 0 else { return 0 }
             return Double(blockCrossings[a..<b].reduce(0, +)) / Double((b - a) * blockSize)
         }
-        // Silence threshold adapts to the recording's own floor (room tone of a phone recording
-        // sits well above digital silence) but stays within [silenceDBFS, −35 dBFS].
+        // Fast mode adapts to room tone; conservative keeps quiet speech down to −60 dBFS.
         let sortedDB = blockEnergy.map { $0 > 0 ? 10 * log10($0) : -120 }.sorted()
         let floorDB = sortedDB.isEmpty ? -120 : sortedDB[Int(Double(sortedDB.count - 1) * 0.1)]
-        let silenceThreshold = min(-35, max(silenceDBFS, floorDB + 8))
+        let silenceThreshold = policy == .conservative ? -60 : min(-35, max(silenceDBFS, floorDB + 8))
         // Windows in relative seconds.
         var windows: [Window] = []
         if classifierOK {
@@ -216,15 +253,6 @@ public enum VoiceActivity {
             } else { segments.append(VoiceActivitySegment(kind: k.kind, start: k.start, end: k.end, confidence: k.confidence)); sums.append((k.confidence, 1)) }
         }
         for i in segments.indices { segments[i].confidence = sums[i].0 / Double(sums[i].1) }
-        // One weak speech slot between two music segments is a classifier wobble inside a song.
-        var k = 1
-        while k + 1 < segments.count {
-            if segments[k].kind == .speech, segments[k].duration <= hopSeconds + 0.01, segments[k].confidence < weakSpeechConfidence,
-               segments[k - 1].kind == .music, segments[k + 1].kind == .music {
-                segments[k - 1].end = segments[k + 1].end
-                segments.remove(at: k + 1); segments.remove(at: k)
-            } else { k += 1 }
-        }
         // The classifier only reports complete windows, so the last < 1.5 s of audio may be
         // uncovered: judge it by energy (speech continues, or silence). Past the end of the audio
         // track itself there is nothing to hear: silence.
@@ -241,33 +269,10 @@ public enum VoiceActivity {
             else { segments.append(VoiceActivitySegment(kind: .silence, start: last.end, end: total, confidence: 1)) }
         }
         if segments.isEmpty { segments = [VoiceActivitySegment(kind: .silence, start: 0, end: total, confidence: 1)] }
-        // Skippable runs: consecutive non-speech segments, bridging an uncertain gap of at most
-        // `maximumBridgeSeconds` whose both neighbours are non-speech (a classifier wobble inside
-        // noise or music). Anything longer, or next to speech, is still sent to Whisper.
-        var runs: [(start: Double, end: Double)] = []
-        var i = 0
-        while i < segments.count {
-            guard segments[i].kind != .speech && segments[i].kind != .uncertain else { i += 1; continue }
-            var run = (start: segments[i].start, end: segments[i].end)
-            var j = i + 1
-            while j < segments.count {
-                let s = segments[j]
-                if s.kind != .speech && s.kind != .uncertain { run.end = s.end; j += 1; continue }
-                if s.kind == .uncertain, s.duration <= maximumBridgeSeconds, j + 1 < segments.count,
-                   segments[j + 1].kind != .speech && segments[j + 1].kind != .uncertain { run.end = segments[j + 1].end; j += 2; continue }
-                break
-            }
-            runs.append(run); i = j
-        }
-        // Speech regions: everything except non-speech runs long enough to skip.
-        var regions: [ClosedRange<Double>] = []
-        var cursor = 0.0
-        for run in runs where run.end - run.start >= minimumSkipSeconds {
-            let a = cursor, b = run.start + paddingSeconds
-            if b > a + 0.05 { regions.append(a...b) }
-            cursor = max(cursor, run.end - paddingSeconds)
-        }
-        if cursor < total - 0.05 { regions.append(cursor...total) }
+        // Conservative skips silence only. Fast may skip music/noise, but never bridges
+        // over speech/uncertain slots; one short reply is enough to keep a candidate.
+        func skippable(_ kind: VoiceActivityKind) -> Bool { Self.skippable(kind, policy: policy) }
+        var regions = candidateRegions(segments: segments, duration: total, policy: policy)
         // Extend region edges while the signal is above the silence floor (50 ms steps, ≤ 1.5 s),
         // so soft onsets and word endings are never cut off.
         // Only into audio labelled silence: loud music or noise next to speech is not a word tail.
@@ -290,26 +295,38 @@ public enum VoiceActivity {
         regions = merged
         // Drop regions that are only padding (non-speech runs back to back).
         regions = regions.filter { region in
-            segments.contains { ($0.kind == .speech || $0.kind == .uncertain) && $0.end > region.lowerBound && $0.start < region.upperBound }
+            segments.contains { !skippable($0.kind) && $0.end > region.lowerBound && $0.start < region.upperBound }
         }
-        // A short region with music or noise on both sides is almost always a fragment of a song
-        // (a sung phrase, a shout). Measured on a real iPhone video: feeding such 2–3 s fragments
-        // first made Whisper emit a bracket phrase and repeat it through the following 80 s of
-        // real conversation. They are not sent; short utterances between silences are kept.
-        func loud(_ kind: VoiceActivityKind) -> Bool { kind == .music || kind == .noise }
-        regions = regions.filter { region in
-            guard region.upperBound - region.lowerBound < minimumIsolatedRegionSeconds else { return true }
-            let before = segments.last { $0.end <= region.lowerBound + paddingSeconds + 0.01 && $0.kind != .speech && $0.kind != .uncertain }
-            let after = segments.first { $0.start >= region.upperBound - paddingSeconds - 0.01 && $0.kind != .speech && $0.kind != .uncertain }
-            let leftLoud = before.map { loud($0.kind) && region.lowerBound - $0.end < 1.0 } ?? false
-            let rightLoud = after.map { loud($0.kind) && $0.start - region.upperBound < 1.0 } ?? false
-            return !(leftLoud && rightLoud)
-        }
+        // Even one hop of speech/uncertain audio is kept, including short responses in music.
+        try Task.checkCancellation()
+        progress?(1)
         let offset = sourceStart.seconds
         return VoiceActivityReport(sourceStart: offset, duration: total,
                                    segments: segments.map { var s = $0; s.start += offset; s.end += offset; return s },
                                    speechRegions: regions.map { ($0.lowerBound + offset)...($0.upperBound + offset) },
-                                   classifierAvailable: classifierOK, analysisSeconds: Date().timeIntervalSince(begun))
+                                   classifierAvailable: classifierOK, analysisSeconds: Date().timeIntervalSince(begun), policy: policy, requestedChannel: preferredChannel, channelSelection: selection)
+    }
+
+    private static func skippable(_ kind: VoiceActivityKind, policy: VoiceActivityPolicy) -> Bool {
+        kind == .silence || (policy == .fast && (kind == .music || kind == .noise))
+    }
+
+    /// Region planning is separate from classification so brief speech/uncertain evidence can
+    /// be verified independently of macOS classifier probabilities. Times are recording-local.
+    static func candidateRegions(segments: [VoiceActivitySegment], duration: Double, policy: VoiceActivityPolicy) -> [ClosedRange<Double>] {
+        var runs: [(start: Double, end: Double)] = []
+        for s in segments where skippable(s.kind, policy: policy) {
+            if let last = runs.last, s.start <= last.end + 0.001 { runs[runs.count - 1].end = s.end }
+            else { runs.append((s.start, s.end)) }
+        }
+        var regions: [ClosedRange<Double>] = [], cursor = 0.0
+        for run in runs where run.end - run.start >= minimumSkipSeconds {
+            let b = min(duration, run.start + paddingSeconds)
+            if b > cursor + 0.05 { regions.append(cursor...b) }
+            cursor = max(cursor, run.end - paddingSeconds)
+        }
+        if cursor < duration - 0.05 { regions.append(cursor...duration) }
+        return regions.filter { r in segments.contains { !skippable($0.kind, policy: policy) && $0.end > r.lowerBound && $0.start < r.upperBound } }
     }
 
     /// Captions (absolute source seconds) with less than `minimumSpeechShare` of their time over

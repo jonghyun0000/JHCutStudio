@@ -191,6 +191,14 @@ final class TimelineCanvas: NSView {
                 shape.lineWidth = 1; shape.stroke()
 
                 NSGraphicsContext.saveGraphicsState(); shape.addClip()
+                if let effect = clip.transition {
+                    let begin = max(.zero, .zero - (effect.offset ?? .zero))
+                    let end = min(clip.duration, max(.zero, effect.duration - (effect.offset ?? .zero)))
+                    if end > begin {
+                        NSColor.systemOrange.withAlphaComponent(0.38).setFill()
+                        NSRect(x: r.minX + begin.seconds * model.zoom, y: r.minY + 2, width: (end - begin).seconds * model.zoom, height: r.height - 4).fill()
+                    }
+                }
                 if let id = clip.assetID, let thumbnail = thumbnails[id] {
                     thumbnail.draw(in: NSRect(x: r.minX + 4, y: r.minY + 3, width: 48, height: 36), from: .zero, operation: .sourceOver, fraction: 0.65, respectFlipped: true, hints: nil)
                 }
@@ -198,7 +206,8 @@ final class TimelineCanvas: NSView {
                     drawWaveform(waveform.peaks, clip: clip, sourceDuration: asset.duration.seconds, rect: r, dimmed: track.isMuted)
                 }
                 let inset: CGFloat = clip.assetID.flatMap { thumbnails[$0] } != nil ? 57 : 10
-                drawText(clip.title?.text ?? clip.name, rect: NSRect(x: r.minX + inset, y: r.minY + 7, width: max(0, r.width - inset - 8), height: 16), size: 10, color: .white)
+                let label = clip.transition.map { $0.kind.label + " → " + clip.name } ?? clip.title?.text ?? clip.name
+                drawText(label, rect: NSRect(x: r.minX + inset, y: r.minY + 7, width: max(0, r.width - inset - 8), height: 16), size: 10, color: .white)
                 drawText(String(format: "%.2f초%@", clip.duration.seconds, track.isMuted ? " · 음소거" : ""), rect: NSRect(x: r.minX + inset, y: r.minY + 25, width: max(0, r.width - inset - 8), height: 12), size: 8, color: .white.withAlphaComponent(0.65))
                 NSGraphicsContext.restoreGraphicsState()
                 if let id = clip.assetID, waveformFailures[id] != nil, track.kind == .audio {

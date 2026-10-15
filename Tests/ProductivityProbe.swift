@@ -1,11 +1,12 @@
 import Foundation
+@testable import JHCutCore
 import AVFoundation
 import CryptoKit
 
 struct ProductivityCheck: Codable { let name: String; let passed: Bool; let detail: String }
 @main struct ProductivityProbe {
-    static func main() async {
-        let output = URL(fileURLWithPath: CommandLine.arguments.dropFirst().first ?? "Artifacts/Productivity-0.3", isDirectory: true)
+    static func main() async throws {
+        let output = try ProbeWorkspace.prepare(defaultPath: "Artifacts/Productivity-0.3")
         var checks: [ProductivityCheck] = [], measurements: [String: AudioAnalysisResult] = [:]
         func record(_ name: String, _ condition: Bool, _ detail: String = "") { checks.append(.init(name: name, passed: condition, detail: detail)); print("\(condition ? "PASS" : "FAIL") \(name): \(detail)") }
         func failure(_ name: String, _ operation: () async throws -> Void) async {

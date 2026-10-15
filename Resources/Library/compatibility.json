@@ -1,0 +1,26 @@
+[
+  {
+    "author": "Alex McCulloch (Pro Sensory)",
+    "category": "music",
+    "downloadURL": "https://opengameart.org/sites/default/files/Techno_5_0.mp3",
+    "duration": 98.81895833333333,
+    "fileBytes": 3952751,
+    "id": "legacy-oga-electronic-mp3",
+    "license": "CC0-1.0",
+    "licenseURL": "https://creativecommons.org/publicdomain/zero/1.0/",
+    "name": "전자 리듬 · Techno 5 · 구버전 호환",
+    "origin": "downloaded",
+    "originalFilename": "Techno_5_0.mp3",
+    "relativePath": "Audio/Music/electronic.mp3",
+    "sha256": "43c498f047022eeb7bd281b83d4ce848dc0a542b0e36bb69880e96231a624f65",
+    "sourceSHA256": "43c498f047022eeb7bd281b83d4ce848dc0a542b0e36bb69880e96231a624f65",
+    "sourceURL": "https://opengameart.org/content/electronic",
+    "tags": [
+      "전자음악",
+      "테크",
+      "몽타주",
+      "외부 수집",
+      "CC0"
+    ]
+  }
+]

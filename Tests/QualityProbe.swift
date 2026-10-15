@@ -8,8 +8,7 @@ import JHCutCore
 @main struct QualityProbe {
  @MainActor static func main() async throws {
   setbuf(stdout, nil); _ = NSApplication.shared
-  let root = URL(fileURLWithPath: CommandLine.arguments.dropFirst().first ?? "Artifacts/Upgrade-0.7/Quality", isDirectory: true).standardizedFileURL
-  try? FileManager.default.removeItem(at: root)
+  let root = try ProbeWorkspace.prepare(defaultPath: "Artifacts/Upgrade-0.7/Quality")
   try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
   var rows: [[String: Any]] = [], metrics: [String: Any] = [:]
   func check(_ name: String, _ passed: Bool, _ detail: String = "") { rows.append(["name": name, "passed": passed, "detail": detail]); print("\(passed ? "PASS" : "FAIL") \(name) \(detail)") }
@@ -36,7 +35,7 @@ import JHCutCore
    caption("두 번째 자막입니다", 2.6, 1.6),
    caption("두 번째 자막입니다", 4.2, 1.0),                                   // duplicate right after
    caption("아주아주아주긴문장을아주짧은시간에보여줍니다", 5.3, 1.0),          // too fast
-   caption("화면 아래로 빠져나간 자막", 6.5, 1.5, y: 0.0),                  // off screen
+   caption("안전 영역 밖 자막", 6.5, 1.5, y: 0.08),                      // inside canvas, outside safe area
    caption("마지막 자막입니다", 9.0, 2.0)
   ]
   // Overlapping in time AND position on a second visible track.
@@ -50,7 +49,7 @@ import JHCutCore
   while model.isBuilding { try await Task.sleep(nanoseconds: 50_000_000) }
   model.exportSidecarSRT = true
   let output = root.appendingPathComponent("checked.mp4")
-  model.exportQueue.append(QueuedExport(project: model.project, baseURL: nil, url: output, codec: .h264, bitRate: 8_000_000))
+  model.exportQueue.append(QueuedExport(project: model.project, baseURL: nil, url: output, codec: .h264, bitRate: 8_000_000, sidecarSRT: true))
   let t0 = Date()
   model.startNextExport(); while model.isExporting { try await Task.sleep(nanoseconds: 100_000_000) }
   metrics["exportPlusCheckSeconds"] = Date().timeIntervalSince(t0)
@@ -61,9 +60,9 @@ import JHCutCore
   check("Quality report produced after export", true, report.summary)
   check("File properties match the timeline", !codes.contains("duration") && !codes.contains("resolution") && !codes.contains("frameRate") && !codes.contains("audioMissing"),
         report.measured.map { String(format: "%d×%d %.3ffps %.3fs audio %d", $0.width, $0.height, $0.frameRate, $0.duration, $0.audioTracks) } ?? "")
-  // The rasteriser keeps a caption centred on the bottom edge inside the frame, so it is reported
-  // as outside the safe area (not as cut off); valid projects cannot place glyphs off the frame.
-  check("Caption on the frame edge reported outside the safe area", report.issues.contains { $0.code == "outsideSafeArea" && $0.message.contains("빠져나간") } && !codes.contains("offScreen"))
+  // Stage8 blocks full-caption clipping before export. This fixture genuinely fits the canvas
+  // while violating the safe margin; the focused workflow suite separately tests blocked clipping.
+  check("Complete caption near edge reported outside safe area", report.issues.contains { $0.code == "outsideSafeArea" && $0.message.contains("안전 영역 밖") } && !codes.contains("offScreen"))
   check("Duplicate caption reported", codes.contains("duplicate"))
   check("Too-fast caption reported", codes.contains("tooFast"))
   check("Overlapping captions reported", codes.contains("overlap"))

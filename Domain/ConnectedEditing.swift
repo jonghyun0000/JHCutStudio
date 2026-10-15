@@ -90,8 +90,9 @@ public enum ConnectionEditing {
                 }
             }
             let family = oldParent.map { $0.lineageID ?? $0.id }
+            let expectedAsset = all.first(where: { $0.id == link.parentID })?.assetID ?? oldParent?.assetID
             let parents = all.filter { parent in
-                parent.id == link.parentID || (family != nil && parent.lineageID == family)
+                parent.id == link.parentID || (family != nil && parent.lineageID == family && parent.assetID == expectedAsset)
             }.sorted { $0.start < $1.start }
             var replacements: [Clip] = []
             for parent in parents {
@@ -99,7 +100,8 @@ public enum ConnectionEditing {
                 let end = min(try link.sourceStart.adding(link.sourceDuration), try parent.sourceStart.adding(parent.sourceDuration))
                 guard end > begin else { continue }
                 let newRate = parent.playbackRate ?? PlaybackRate()
-                let oldRate = oldParent?.playbackRate ?? parent.playbackRate ?? PlaybackRate()
+                // Nil means the previous parent was at 1x; it must not fall back to the new speed.
+                let oldRate = oldParent.map { $0.playbackRate ?? PlaybackRate() } ?? parent.playbackRate ?? PlaybackRate()
                 let offset = oldRate.timelineDuration(for: begin - link.sourceStart)
                 let length = oldRate.timelineDuration(for: end - begin)
                 let start = try parent.start.adding(newRate.timelineDuration(for: begin - parent.sourceStart))
@@ -110,10 +112,10 @@ public enum ConnectionEditing {
                 }
                 var copy = try ClipTemporalEditor.trimmed(child, newStart: start, newSourceStart: child.title == nil ? begin : .zero,
                     newDuration: length, frameRate: after.frameRate, temporalSource: child.title == nil, animationOffset: offset)
-                let ratio = duration.seconds / length.seconds
-                copy.duration = duration
+                copy = try ClipTemporalEditor.retimed(copy, duration: duration) { time in
+                    try time.scaled(numerator: oldRate.numerator, denominator: oldRate.denominator).scaled(numerator: newRate.denominator, denominator: newRate.numerator)
+                }
                 if child.title == nil { copy.playbackRate = newRate }
-                copy.keyframes = copy.keyframes?.map { var key = $0; key.time = MediaTime(seconds: key.time.seconds * ratio); return key }
                 copy.ducking = nil // a range edit needs fresh dialogue-based automation
                 copy.connection = ClipConnection(parentID: parent.id, sourceStart: begin, sourceDuration: end - begin, generatedText: link.generatedText)
                 if parents.count > 1 { copy.lineageID = child.lineageID ?? child.id }

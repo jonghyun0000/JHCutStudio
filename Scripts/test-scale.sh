@@ -2,8 +2,9 @@
 set -euo pipefail
 JHCUT_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$JHCUT_ROOT"
+source Scripts/probe-common.sh
 # Set JHCUT_SCALE_BUILD to an isolated core to compare two engine revisions with one probe.
-JHCUT_SCALE_BUILD="${JHCUT_SCALE_BUILD:-$JHCUT_ROOT/Build}"
+JHCUT_SCALE_BUILD="${JHCUT_SCALE_BUILD:-$build_dir}"
 if [[ ! -f "$JHCUT_SCALE_BUILD/JHCutCore.swiftmodule" || ! -f "$JHCUT_SCALE_BUILD/libJHCutCore.dylib" ]]; then
   echo "Core module is missing in $JHCUT_SCALE_BUILD." >&2; exit 1
 fi
@@ -15,6 +16,6 @@ if [[ ! -d "$JHCUT_TEST_SDK" ]]; then JHCUT_TEST_SDK="$(xcrun --show-sdk-path)";
 "$JHCUT_TOOLCHAIN/swiftc" -swift-version 5 -target "$(uname -m)-apple-macos14.0" -sdk "$JHCUT_TEST_SDK" -O -g \
   -parse-as-library -I "$JHCUT_SCALE_BUILD" -L "$JHCUT_SCALE_BUILD" -lJHCutCore \
   -Xlinker -rpath -Xlinker @executable_path \
-  Validation/Fixtures.swift Validation/MediaInspection.swift Tests/ScaleProbe.swift \
+  Validation/Fixtures.swift Validation/MediaInspection.swift Tests/ProbeWorkspace.swift Tests/ScaleProbe.swift \
   -o "$JHCUT_SCALE_BUILD/ScaleProbe"
-exec "$JHCUT_SCALE_BUILD/ScaleProbe" "${1:-$JHCUT_ROOT/Artifacts/Scale}" "${2:-60}"
+exec "$JHCUT_SCALE_BUILD/ScaleProbe" "$@"

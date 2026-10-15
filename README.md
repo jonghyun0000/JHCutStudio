@@ -1,96 +1,112 @@
 # JH CUT Studio 0.7
 
-한국어 우선 macOS 로컬 영상 편집기. 연결된 영상·대사·자막 편집, 한국어·일본어·영어 자동 자막과 상호 번역, HDR→SDR 사본, H.264/HEVC/ProRes 출력과 복구 기능을 제공합니다. **0.7 장시간 영상·검증 기능은 [0.7 작업 기록](docs/UPGRADE-0.7-WORKLOG.md), 설치·문제 해결은 [INSTALL](docs/INSTALL-0.7.md), 0.6 다국어 기능은 [사용법](docs/MULTILINGUAL-0.6.md), 최신 검증과 제한은 [검증 상태](docs/STATUS.md)를 확인하세요.**
+> Development source candidate: publication, successful builds and supported installation are separate gates. Check the actual source revision and Release assets. See [source/evaluation boundaries](docs/PUBLIC-PRIVATE-VALIDATION.md).
 
-Developer ID 공증 전인 로컬 개발 빌드입니다. 34개 전체 완료 또는 상용 전문 편집기와 동등한 완성도를 주장하지 않습니다.
+A local video editor for Mac, built for individual creators working with iPhone footage, short videos, interviews and promotional projects.
 
-## 실행
+Edit a multitrack timeline, create Korean, Japanese and English subtitle workflows, and export without an account, subscription or product watermark. Speech recognition runs on your Mac with an optional Whisper model.
 
-`Build/JH CUT Studio.app`을 더블클릭하거나:
+[한국어 안내](README.ko.md) · [Release readiness](docs/RELEASE-READINESS.md) · [Contributing](CONTRIBUTING.md)
 
-```bash
-cd /Volumes/T7/GPT/JHCutStudio
-bash Scripts/run.sh
-```
+**Development build: 0.7.0, build 8.** Signed public downloads are still being prepared. The interface is primarily Korean. An App Language menu now offers partial English coverage for the main editing flow and model-installation consent; advanced tools and some diagnostics remain Korean. This project does not claim feature or performance parity with a commercial editor.
 
-- 실제 앱: `Build/JH CUT Studio.app`
-- 0.7 변경·검증 기록: [UPGRADE-0.7-WORKLOG](docs/UPGRADE-0.7-WORKLOG.md) · 설치/문제 해결: [INSTALL-0.7](docs/INSTALL-0.7.md)
-- 다국어 자막·번역: [0.6 사용법](docs/MULTILINGUAL-0.6.md)
-- 기존 기능·사용법: [0.5 사용법과 34개 개선](docs/UPGRADE-0.5-WORKLOG.md)
-- 이전 버전: [0.3 업그레이드 설명](docs/UPGRADE-0.3.md)
-- 확인한 약점 41개: [AUDIT](docs/AUDIT-0.3.md)
-- 검증·미구현 범위: [STATUS](docs/STATUS.md)
-- 소재 출처·라이선스: [ASSET-SOURCES](docs/ASSET-SOURCES.md)
-- 평가 기준과 경쟁 제품 비교: [SCORECARD](docs/SCORECARD.md)
+## What you can do
 
-## 0.7에서 추가·개선 (0.7.0, 빌드 8)
+- Arrange, split, trim and ripple-edit video, image, title and audio tracks. Use connected clips, snapping, multiselection, undo/redo and independent aspect-ratio versions.
+- Preview and export through a shared compositor, with transform/opacity/volume keyframes, color adjustments, limited 3D LUT support, six transitions and six blend modes.
+- Generate local subtitles, review language uncertainty, edit text and timing, import/export SRT, and keep original subtitles linked to separate translations. Models are installed with explicit consent.
+- Use proxy previews while exporting from original media, reconnect missing files, collect project media, and recover saved projects from backups.
+- Add library assets: 112 sound effects, 21 music tracks and 225 image assets. Twelve music tracks are 2–3 minutes long. See [media credits](Resources/Library/CREDITS.md) for sources and terms.
+- Export SDR Rec.709 H.264 or HEVC MP4 and ProRes 422 MOV. Audio is AAC, including the current ProRes path.
 
-- 긴 영상 이어하기: 5분 구간마다 체크포인트 저장, 취소·종료 후 다시 실행하면 완료 구간을 건너뜀(원본·설정이 같을 때만).
-- 대본(.srt/.txt)이 영상 옆에 있으면 CER·WER·누락/추가 문장·시간 오차 보고서. 대본이 없으면 “평가 불가”.
-- 문장별 언어 감지와 직접 지정, 화자별 채널 녹음의 화자 구분(불확실하면 붙이지 않음), 선택 자막 일괄 스타일·시간 편집과 안전 영역 맞춤.
-- 번역 말투(존댓말·방송체·반말)와 프로젝트 용어집(이름·브랜드 보호, 적용/실패 표시).
-- 음성 구간 분석: 무음·음악·강한 소음은 인식 생략(원본 소리는 그대로), 무음·음악 위 자막 경고, Whisper 반복 루프 감지·재시도.
-- 출력 후 자동 품질 검사(길이·해상도·fps·오디오, 자막 위치·중복·속도, 번인 픽셀 확인, SRT 비교)와 출력 기록 연결.
-- 설치 점검, 0.6 문서 보호 사본(`.before-0.7`), 프로젝트 백업/복원, 자격 증명 없는 배포 사전 점검.
+Adjustable ellipse/rectangle masks now have core/editor regression evidence and a native rectangle drag, Undo/Redo and save/reopen check. Full native control/real-footage acceptance remains open. Tracking, foreground segmentation, automatic reframing, free-form curves/scopes, continuous speed curves, compound clips and other advanced tools remain on the [original requirements roadmap](docs/GOAL-REQUIREMENTS-2026-10-11.md).
 
-## 0.3부터 제공해 온 기능
+## Build and run
 
-- SDR HEVC/ProRes, JPEG/HEIC·EXIF 방향, 프록시 생성·재사용·취소, 원본 기반 출력.
-- 삽입·덮어쓰기·오디오 분리·트랙 관리, 키프레임/페이드를 보존하는 분할·트림.
-- 실제 PCM 피크/RMS·무음 후보·피크 정규화, 프로젝트 원본 수집·검증.
-- 자막 병합·일괄 시간 이동, UTF-16/CP949 추가, 한국어 Whisper 설치/인식 UI. base 모델은 설치되어 실제 자막 생성과 출력 검사를 통과했습니다. small 설치와 실사 정답 대본 기반 정확도 평가는 별도 대기입니다.
-- **4K UHD·DCI 4K 출력과 23.976~60fps 지원.** 캔버스·프레임레이트·품질을 속성에서 고릅니다. 비트레이트는 해상도에 맞춰 자동 제안합니다.
-- **macOS 26 Liquid Glass 디자인.** 창 툴바 통합, 영상 위 떠 있는 재생 컨트롤, 투명도 줄이기 설정 존중, 아이콘 버튼 전체에 VoiceOver 레이블.
-- H.264 출력 4~64Mbps, 검색·속성 접기·안전 영역·타임라인 자동 스크롤.
-- 속성 슬라이더를 드래그하는 동안 미리보기가 바로 바뀝니다. 드래그 한 번은 실행취소 1단계입니다. 숫자 입력은 Return 또는 `입력한 숫자 적용`을 씁니다.
-- 편집마다 타임라인 전체를 다시 조합하던 비용을 없앴습니다. 10분·300컷 타임라인의 조합 재구축이 11.510초에서 0.070초입니다. 합성 소재 기준이며 실사 장시간 편집을 검증한 값은 아닙니다.
+The verified local toolchain is **Apple Silicon, Command Line Tools Swift 6.3.3, macOS SDK 26.5, Swift 5 language mode**. The recent test Mac runs macOS 27.2. The deployment target is macOS 14, but that is not a claim that all macOS 14+ configurations have passed acceptance. Intel and other Macs remain unverified; the bundled Whisper executable is arm64.
 
-기존 0.2 기능도 포함합니다.
-
-- **효과음 112개, 배경음 10곡, PNG 소스 32개**를 앱에 포함했습니다. 외부 CC0 108개와 직접 제작 46개를 출처·저작자·라이선스·SHA-256과 함께 구분합니다.
-- **자막 스타일 24종**, 테두리·배경·정렬·줄 간격·최대 줄 수, 내 스타일 저장, 자막 목록·검색, UTF-8 SRT 입출력.
-- 라이브러리 검색·종류 필터·즐겨찾기·음원 미리듣기·현재 위치에 삽입.
-- 일정 속도 0.25–4배, 위치·크기·회전·불투명도·볼륨 키프레임, 노출·대비·채도·크롭, 화면/소리 페이드.
-- 실제 샘플 파형, Cmd 다중 선택, 그룹 이동·삭제 한 번 실행취소, 클립 경계·플레이헤드 스냅, 겹친 클립 선택 메뉴.
-- 독립된 9:16/16:9/1:1/4:5 버전, 누락 미디어 재연결, 자동 복구본·프로젝트별 복구 선택.
-
-기본 설정에서는 음성이 있는 지원 영상을 가져오면 메인 트랙 배치 → 언어 감지 → 원문 자막 생성 → 한국어 번역까지 실행합니다. 한국어 영상은 원문을 표시합니다. 자막 탭에서 자동 생성을 끄거나 번역 언어를 바꿀 수 있습니다. 사운드/소스 탭의 `+`는 플레이헤드에 삽입하며 자막 탭의 스타일은 선택 자막에 적용합니다. 자막을 선택하지 않았으면 새 제목을 만듭니다. 속성의 슬라이더는 드래그하는 동안 반영되고, 숫자는 Return 또는 `입력한 숫자 적용`으로 반영합니다. 키프레임은 별도의 `현재 위치에 키프레임 저장` 버튼을 사용합니다.
-
-Space 재생/정지, ←/→ 프레임 이동, Cmd+B 분할, Cmd+D 복제, Delete 삭제, Cmd+Z/Shift+Cmd+Z 실행취소/재실행, Cmd+S 저장입니다. 편집 단축키는 텍스트 입력 중에는 본문 편집을 방해하지 않습니다. 리플 삭제·배속 변경은 같은 트랙의 뒤 클립만 이동하며 다른 트랙을 자동 연결하지 않습니다.
-
-## 지원과 안전성
-
-- 입력: SDR 메타데이터가 확인되는 H.264·HEVC·ProRes 422 계열, PNG·JPEG·HEIC, 실제 디코딩에 성공한 오디오. **HDR/Log·색 정보가 불명확한 파일은 차단**합니다. 지원 세부 프로필과 실제 시험 범위는 엔진 감사 문서를 참조하세요.
-- 출력: SDR Rec.709 H.264 MP4. **최대 4096×2160(9.4메가픽셀), 23.976/24/25/29.97/30/50/59.94/60fps**, 4–64Mbps. 오디오가 있으면 AAC/48kHz 스테레오. 기존 출력 파일은 덮어쓰지 않습니다.
-- 미리보기와 출력이 같은 Core Image/Core Text 합성기를 사용합니다. 출력 계획은 항상 원본을 참조하며 프록시를 출력하지 않습니다.
-- 원본은 읽기 참조입니다. 프로젝트는 유리수 시간·상대 경로·bookmark와 함께 원자적으로 저장하며 이전 정상 문서는 `.backup`에 보존합니다.
-- 변경 후 1.2초에 별도 복구본을 저장합니다. 복구를 미룬 다른 프로젝트의 복구본도 프로젝트별로 보존합니다. 원본 문서를 자동으로 덮어쓰지 않습니다.
-- 가져온 자료는 파일 참조입니다. ‘프로젝트와 원본 모으기’로 새 폴더에 원본·문서·SHA-256 목록을 수집할 수 있습니다.
-- 계정·서버·외부 API·유료 소재·제품 워터마크가 없습니다. 영상·음성·번역 문구를 클라우드 처리로 보내지 않습니다. Apple 번역은 기기 안에서 처리하며 API 사용·성능 메타데이터 수집 가능성은 [Apple 안내](https://developer.apple.com/documentation/translation/translationsession)를 따릅니다. 수집 스크립트는 명시적으로 실행할 때 공개 자료를 다운로드합니다.
-- HDR→SDR 사본·연결 클립·타원 마스크·기본 믹스는 0.5에서 추가했습니다. 추적·속도 곡선·멀티캠·협업·공개 배포 공증은 미완료입니다. 4K는 소프트웨어 합성이라 미리보기가 느릴 수 있으니 프록시를 함께 쓰세요.
-
-## 재현
+Install the required Apple developer tools, then run from the repository root:
 
 ```bash
 bash Scripts/build.sh
-bash Scripts/test-domain.sh
-bash Scripts/test-productivity.sh
-bash Scripts/test-app-productivity.sh Artifacts/Editor-NewRun
-bash Scripts/test-scale.sh Artifacts/Scale-NewRun 300
-bash Scripts/test-live-preview.sh Artifacts/Live-NewRun
-bash Scripts/test-format.sh Artifacts/Format-NewRun
-JHCUT_COMPAT_BUILD="$PWD/Build" JHCUT_COMPAT_USE_EXISTING_CORE=1 bash Scripts/test-compatibility.sh Artifacts/Compatibility-NewRun
-bash Scripts/test-engine.sh Artifacts/EngineUpgrade
-Build/JHCutValidate Artifacts/G0-NewRun
-Build/JHCutValidate --upgrade Artifacts/Upgrade-NewRun
+bash Scripts/run.sh
 ```
 
-자동 검사 228개가 통과합니다. `test-scale.sh`는 트랙 패킹과 carrier 재사용을, `test-live-preview.sh`는 라이브 미리보기와 실행취소 1단계를 확인하며 사용자의 복구본을 건드리지 않습니다. 검증은 실제 영상을 생성·출력·재디코딩합니다. 기존 출력 보호를 위해 새 결과 폴더를 지정하세요. `--inspect movie.mp4 [proof-folder]`로 기존 MP4의 코덱·프레임·오디오·샘플 이미지를 검사할 수 있습니다. 완성된 60초/10분 영상과 보고서는 `Artifacts/Upgrade`에 있습니다.
+The app is created at `Build/JH CUT Studio.app`. The build uses local ad-hoc signing. It is not a Developer ID signed or notarized release. Run `build.sh` again after changing source; `run.sh` builds only when the app is absent.
 
-## 빌드 환경
+To select another installed toolchain without changing the system selection:
 
-실제 장비: Apple M4 / Mac16,1 / 16GB / macOS27.0(26A428). CLT Swift6.3.3, SDK26.5, Swift5 언어 모드, arm64, 최소 macOS14 타깃으로 빌드했습니다. macOS14 실기기와 Intel은 미검증입니다.
+```bash
+export JHCUT_DEVELOPER_DIR="/Library/Developer/CommandLineTools"
+export JHCUT_SDK="$(DEVELOPER_DIR="$JHCUT_DEVELOPER_DIR" xcrun --sdk macosx --show-sdk-path)"
+bash Scripts/build.sh
+```
 
-설치된 Xcode27은 약관 동의가 되어 있지 않아 기본 `swift`/`git` 경로가 차단되어 있습니다. 스크립트는 해당 프로세스의 `DEVELOPER_DIR`만 CLT로 지정합니다. 시스템 설정이나 약관 동의를 대신 변경하지 않습니다. 이 장비의 SwiftPM은 PackageDescription 인터페이스/라이브러리 버전 불일치가 있어 **검증된 빌드 경로는 Scripts/build.sh**입니다. XCTest는 CLT 컴파일러와 설치된 XCTest 프레임워크를 사용합니다.
+The full app needs a macOS 26+ SDK. The documented local CLT path is verified; some individual probes still assume CLT paths. The public generated-fixture CI lane selects full Xcode explicitly. SwiftPM is not the verified build route on the current development machine. See [installation details](docs/INSTALL-0.7.md).
 
-Apple 시스템 프레임워크와 공식 whisper.cpp v1.9.4 로컬 실행 파일을 사용합니다. Whisper MIT 라이선스를 앱에 포함하며 모델은 승인 후 별도로 다운로드합니다. FFmpeg·폰트 파일은 포함하지 않습니다. 앱은 로컬 ad-hoc 서명이고 Developer ID 서명·공증 제품은 아닙니다. 코드 구조는 [ARCHITECTURE](docs/ARCHITECTURE.md)에 기록했습니다.
+## First edit
+
+Follow the bilingual [first edit guide](docs/QUICKSTART.md).
+
+1. Import supported media and add it to a timeline. Space toggles play/pause; arrow keys step frames; Cmd+B splits; Cmd+Z undoes; Cmd+S saves.
+2. Open the subtitle panel if you want automatic captions. Ordinary editing and export remain available when the optional model is missing.
+3. Review the model's source, license, size and SHA-256 before approving installation. The base multilingual model is approximately 148 MB and is downloaded separately.
+4. Review generated words, timing and language flags. Translation additionally requires **macOS 26+ and installed Apple translation language packs**.
+5. Add music/titles, save the `.jhcut` project, reopen it and export to a new file. Existing output files are not overwritten.
+
+HDR input requires a supported explicit SDR conversion copy. Unsupported or unknown color profiles are not silently relabeled as SDR. See [format boundaries](README.ko.md#지원-형식과-데이터-보호).
+
+## Privacy and licenses
+
+Core editing, speech recognition and the application's translation path do not upload footage, audio or subtitle text to a cloud processing API. Model installation and explicitly invoked asset-collection scripts download files. Apple translation language packs are a separate system requirement.
+
+Source code is available under the [MIT license](LICENSE). Dependencies and media retain their own licenses; see [third-party notices](THIRD_PARTY_NOTICES.md), [runtime notices](Resources/Whisper/THIRD-PARTY-NOTICES.txt), [media credits](Resources/Library/CREDITS.md) and [artwork provenance](Resources/Brand/README.md). Complete notices are included in new app builds and can be read from the app's **라이선스 및 소재 출처…** menu.
+
+No external font binaries or FFmpeg executable are included in the inspected resources. Installed macOS fonts and frameworks are platform resources.
+
+## Verification and known limits
+
+One completed integration run built the full app and passed the following scopes (subsequent mask runs are recorded separately):
+
+| Scope | Result |
+|---|---|
+| Playback observation graph protection | 34 checks, 0 failures |
+| Actual editor command: subtitle failure, preservation and retry | 40 checks, 0 failures |
+| Distribution diagnostics, backups and bundled legal files | 34 checks, 0 failures |
+| Real iPhone recognition: 3 videos, 4 windows, 24 trials | 101 checks, 0 failures |
+
+A separate current native-app check opened a generated project, paused at 7 seconds 6 frames, verified diagnostic-menu protection and exported a 15-second movie. Independent decoding found 450 frames, monotonic timestamps and 720,000 AAC samples per channel. These bounded checks do not establish all-device support, human listening quality or recognition accuracy.
+
+**Human-reviewed references are 0/4**, so no real-speech CER/WER or translation meaning score is claimed. The latest full app playback run passes the original strict 600 ms generated 1080/4K fixture cases after an exact-unity audio-lane algorithm fix. Historical failures are preserved; changed-speed audio startup and physical speaker acceptance remain unverified. A supplemental audio-quality probe retains one raw preAAC buffer-duration failure under investigation. The earlier full regression was interrupted; its completed checks do not prove all current suites pass. Full mask/first-use acceptance, complete English coverage, official signing/notarization and installation on another Mac remain open.
+
+Read [release readiness](docs/RELEASE-READINESS.md) for the current evidence, limits and next gates.
+
+## Tests
+
+The source-bound runner requires a standalone Git checkout with a valid HEAD (for example, a clone containing the reviewed revision). The source-review ZIP can be built with `Scripts/build.sh`, but has no Git history and cannot run this verification command directly. Check out the branch or commit you intend to verify; do not use an unrelated parent repository as its Git identity. Source availability on GitHub does not establish signed public-download acceptance.
+
+For a fresh app build and generated-fixture checks:
+
+```bash
+python3 -B Scripts/verification-run.py --suites domain compatibility productivity
+```
+
+The domain lane additionally requires an installed Xcode XCTest framework; set `JHCUT_XCODE` to that Xcode's developer directory if needed. [Public CI](.github/workflows/public-generated.yml) separates these generated probes from private-footage and installed-model checks. The workflow has been prepared locally; hosted execution is still pending.
+
+Each run writes a unique directory under `Artifacts/Runs/`, with a source-bound index, build, logs and output evidence. Check the terminal status, suite exit codes and file hashes. Do not reuse or overwrite old run directories. The current default list has **73 suites**; running a subset does not prove all 73 pass. Full local validation additionally needs the documented private dataset, an installed model and other feature-specific inputs.
+
+To generate a reproducible 15-second example after building:
+
+```bash
+mkdir -p Artifacts
+JHCUT_DEMO_OUTPUT="$(mktemp -d "$PWD/Artifacts/Demo-XXXXXX")"
+Build/JHCutValidate "$JHCUT_DEMO_OUTPUT"
+```
+
+## Help build JH CUT
+
+See [CONTRIBUTING](CONTRIBUTING.md) for changes and evidence expectations, [SECURITY](SECURITY.md) for vulnerability reporting, and the [architecture](docs/ARCHITECTURE.md) for code locations. Bug, feature and pull request templates are included. See the [changelog](CHANGELOG.md), [roadmap](ROADMAP.md) and [beginner contribution briefs](docs/GOOD-FIRST-ISSUES.md).
+
+A tested release package, public download site, redistributable sample projects, a real usage demo and contributor issues are still being prepared. Stars are optional and will never be a download requirement. The long-term goal is 10,000 GitHub stars; downloads, successful first exports, returning users and useful contributions will also be tracked.
+
+A [90-day growth plan](docs/LAUNCH-GROWTH-90-DAYS.md) and [KO/EN launch drafts](docs/LAUNCH-COPY.md) are prepared. A separate owner-private bilingual Site preview is deployed; a verified public download, actual usage recording and three public sample projects remain open.

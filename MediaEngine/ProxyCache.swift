@@ -7,6 +7,17 @@ import Darwin
 /// Disposable preview media. Project documents and exports continue to refer to the originals.
 /// One generation runs per cache instance. Cancellation is cooperative and removes its entire scratch directory.
 public actor ProxyCache {
+    public struct Metrics: Sendable {
+        public fileprivate(set) var hits = 0
+        public fileprivate(set) var misses = 0
+        public fileprivate(set) var invalidEntries = 0
+        public fileprivate(set) var generations = 0
+        public fileprivate(set) var evictions = 0
+        public fileprivate(set) var clearedEntries = 0
+        public fileprivate(set) var verifiedBytes: Int64 = 0
+    }
+    private var counters = Metrics()
+    public func metrics() -> Metrics { counters }
     public let directory: URL
     private let limitBytes: Int64
     private var generating = false
@@ -18,6 +29,7 @@ public actor ProxyCache {
         let frameCount: Int
         let width: Int
         let height: Int
+        let sha256: String?
         var lastAccess: Date
     }
     public init(directory: URL? = nil, limitBytes: Int64 = 2_000_000_000) {
@@ -39,23 +51,40 @@ public actor ProxyCache {
         return removed
     }
     /// Pin the URLs used by the currently published player plan before generating more proxies.
-    public func setProtectedURLs(_ urls: [URL]) { protectedPaths = Set(urls.map { $0.standardizedFileURL.path }) }
+    public func setProtectedURLs(_ urls: [URL]) { guard !Task.isCancelled else { return }; protectedPaths = Set(urls.map { $0.standardizedFileURL.path }) }
     public func cachedURL(for sourceURL: URL) throws -> URL? {
+        try Task.checkCancellation()
         let key = try fingerprint(sourceURL)
         let url = mediaURL(key)
-        guard let data = try? Data(contentsOf: metadataURL(key)), var entry = try? JSONDecoder().decode(Entry.self, from: data),
-              entry.version == 1, entry.fingerprint == key, entry.bytes > 0,
-              fileSize(url) == entry.bytes else { return nil }
+        guard let data = try? Data(contentsOf: metadataURL(key)) else { counters.misses += 1; return nil }
+        guard var entry = try? JSONDecoder().decode(Entry.self, from: data),
+              entry.version == 2, entry.fingerprint == key, entry.bytes > 0,
+              let digest = entry.sha256, digest.count == 64,
+              fileSize(url) == entry.bytes else { counters.misses += 1; counters.invalidEntries += 1; return nil }
+        // A same-size damaged proxy is not a hit. Stream the complete checksum with bounded memory;
+        // verify that the file did not change during inspection. Legacy entries remain on disk but
+        // need regeneration because they have no trustworthy content receipt.
+        let before = try? fingerprint(url)
+        guard let before else { counters.misses += 1; counters.invalidEntries += 1; return nil }
+        let actual: String
+        do { actual = try contentDigest(url) }
+        catch is CancellationError { throw CancellationError() }
+        catch { counters.misses += 1; counters.invalidEntries += 1; return nil }
+        guard actual == digest,
+              before == (try? fingerprint(url)) else { counters.misses += 1; counters.invalidEntries += 1; return nil }
         entry.lastAccess = Date()
         try JSONEncoder().encode(entry).write(to: metadataURL(key), options: .atomic)
+        counters.hits += 1
         return url
     }
     public func sizeBytes() throws -> Int64 { try entries().reduce(0) { $0 + fileSize($1.url) } }
     public func removeAll() throws {
+        try Task.checkCancellation()
         guard !generating else { throw MediaEngineError.failed("프록시 생성 중에는 캐시를 지울 수 없습니다.") }
         for entry in try entries() where !protectedPaths.contains(entry.url.standardizedFileURL.path) {
             try FileManager.default.removeItem(at: entry.url)
             try? FileManager.default.removeItem(at: metadataURL(entry.key))
+            counters.clearedEntries += 1
         }
     }
     public func generate(for sourceURL: URL, progress: @escaping @Sendable (Double) -> Void = { _ in }) async throws -> URL {
@@ -111,8 +140,8 @@ public actor ProxyCache {
         // A corrupted/truncated prior entry is replaceable; unrelated files are never touched.
         if FileManager.default.fileExists(atPath: final.path) { try FileManager.default.removeItem(at: final) }
         try FileManager.default.moveItem(at: temporary, to: final)
-        let entry = Entry(version: 1, fingerprint: key, bytes: bytes, frameCount: count, width: Int(size.width), height: Int(size.height), lastAccess: Date())
         do {
+            let entry = Entry(version: 2, fingerprint: key, bytes: bytes, frameCount: count, width: Int(size.width), height: Int(size.height), sha256: try contentDigest(final), lastAccess: Date())
             try JSONEncoder().encode(entry).write(to: metadataURL(key), options: .atomic)
             try evict(protecting: final)
         } catch {
@@ -121,7 +150,18 @@ public actor ProxyCache {
             throw error
         }
         progress(1)
+        counters.generations += 1
         return final
+    }
+    private func contentDigest(_ url: URL) throws -> String {
+        let handle = try FileHandle(forReadingFrom: url); defer { try? handle.close() }
+        var hash = SHA256()
+        while let data = try handle.read(upToCount: 1_048_576), !data.isEmpty {
+            try Task.checkCancellation()
+            counters.verifiedBytes += Int64(data.count)
+            hash.update(data: data)
+        }
+        return hash.finalize().map { String(format: "%02x", $0) }.joined()
     }
     private func fingerprint(_ url: URL) throws -> String {
         // URL.resourceValues may retain a cached mtime on the same URL instance. Fetch fresh stat attributes.
@@ -165,6 +205,7 @@ public actor ProxyCache {
             try FileManager.default.removeItem(at: entry.url)
             try? FileManager.default.removeItem(at: metadataURL(entry.key))
             total -= bytes
+            counters.evictions += 1
         }
         guard total <= limitBytes else { throw MediaEngineError.failed("사용 중인 프록시가 캐시 한도를 차지하고 있습니다. 다른 프로젝트를 닫거나 캐시 한도를 늘리세요.") }
     }

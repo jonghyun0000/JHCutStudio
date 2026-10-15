@@ -14,6 +14,7 @@ import JHCutCore
     }
 
     static func main() async {
+        setbuf(stdout, nil)
         do { try await run() }
         catch { fputs("Scale probe failed: \(error)\n", stderr); exit(1) }
     }
@@ -53,9 +54,9 @@ import JHCutCore
     }
 
     static func run() async throws {
-        let folder = URL(fileURLWithPath: CommandLine.arguments.dropFirst().first ?? "Artifacts/Scale", isDirectory: true).standardizedFileURL
-        let clipCount = Int(CommandLine.arguments.dropFirst(2).first ?? "") ?? 60
-        try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+        let folder = try ProbeWorkspace.prepare(defaultPath: "Artifacts/Scale")
+        let clipCount = Int(CommandLine.arguments.dropFirst(2).first ?? ProcessInfo.processInfo.environment["JHCUT_SCALE_CLIPS"] ?? "1800") ?? 1800
+        guard (2...3600).contains(clipCount) else { throw ValidationFailure.failed("Scale clip count must be 2...3600") }
         let fixtures = try await Fixtures.generate(in: folder.appendingPathComponent("fixtures", isDirectory: true))
         let videos = try await [MediaImporter.inspect(url: fixtures.videos[0]),
                                 MediaImporter.inspect(url: fixtures.videos[1]),
@@ -156,6 +157,7 @@ import JHCutCore
               String(format: "first build %.2fs, immediate rebuild %.2fs", first, second))
         print(String(format: "SCALE_TIMING clips=%d timeline=%.0fs build1=%.3fs build2=%.3fs videoTracks=%d",
                      clipCount, timelineSeconds, first, second, bigVideoTracks))
+        try JSONSerialization.data(withJSONObject:["clipCount":clipCount,"timelineSeconds":timelineSeconds,"build1Seconds":first,"build2Seconds":second,"videoTracks":bigVideoTracks,"sourceCount":3,"sourceWidth":540,"sourceHeight":960,"canvasWidth":big.sequence.width,"canvasHeight":big.sequence.height,"scope":"three synthetic five-second sources repeated; build timing and six-second output quality, not full long export or4K benchmark"],options:[.prettyPrinted,.sortedKeys]).write(to:folder.appendingPathComponent("scale-timing.json"))
 
         let report = folder.appendingPathComponent("scale-checks.json")
         try JSONEncoder().encode(checks).write(to: report, options: .atomic)

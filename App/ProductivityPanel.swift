@@ -37,16 +37,18 @@ struct AudioTools: View {
 }
 
 struct SpeechTools: View {
+    @Environment(\.locale) private var uiLocale
     @ObservedObject var model: EditorModel
     var body: some View {
+        let _ = uiLocale.identifier // Re-evaluate dynamic String lookups when the in-app language changes.
         VStack(alignment: .leading, spacing: 8) {
             Text("다국어 자동 자막·번역").font(JH.Font.label.weight(.semibold))
             Toggle("영상 가져오면 자동 자막 생성", isOn: $model.autoCaptionImportedVideos).disabled(model.busyDocument)
             Toggle("자막 생성 후 자동 번역", isOn: $model.translateAfterTranscription).disabled(model.busyDocument)
-            if !model.detectedSpeechLanguages.isEmpty { Text("감지된 음성: " + model.detectedSpeechLanguages).font(JH.Font.micro) }
-            Text(model.transcriptionStatus).font(JH.Font.micro).foregroundStyle(.secondary)
+            if !model.detectedSpeechLanguages.isEmpty { Text(UIL10n.format("ui.speech.detected", model.detectedSpeechLanguages)).font(JH.Font.micro) }
+            Text(UIL10n.text(model.transcriptionStatus)).font(JH.Font.micro).foregroundStyle(.secondary)
             if !model.selectedSpeechClips.isEmpty {
-                Text("선택한 음성 클립 \(model.selectedSpeechClips.count)개").font(JH.Font.caption)
+                Text(UIL10n.format("ui.speech.count", model.selectedSpeechClips.count)).font(JH.Font.caption)
                 ForEach(model.selectedSpeechClips.prefix(4), id: \.1.id) { entry in
                     Text(entry.1.name).font(JH.Font.micro).lineLimit(1).foregroundStyle(.secondary)
                 }
@@ -58,14 +60,22 @@ struct SpeechTools: View {
                 .onChange(of: model.speechModelID) { model.refreshTranscriptionStatus() }
             Toggle("기존 자동 자막 교체 · 직접 고친 문구 보존", isOn: $model.replaceAutomaticCaptions).disabled(model.busyDocument)
             Toggle("긴 영상 이어하기 · 5분 구간마다 저장", isOn: $model.useSpeechCheckpoints).disabled(model.busyDocument)
-            Toggle("무음·음악·소음 구간은 인식 생략 · 원본 소리는 그대로", isOn: $model.skipNonSpeech).disabled(model.busyDocument)
+            Toggle("말소리 분석으로 인식 구간 줄이기", isOn: $model.skipNonSpeech).disabled(model.busyDocument)
+            if model.skipNonSpeech {
+                Picker("인식 구간 정책", selection: $model.voiceActivityPolicy) {
+                    ForEach(VoiceActivityPolicy.allCases, id: \.self) { Text($0.label).tag($0) }
+                }.disabled(model.busyDocument)
+                Text(model.voiceActivityPolicy.detail).font(JH.Font.micro).foregroundStyle(.secondary)
+            }
             VoiceActivityRow(model: model)
-            if !model.selectedClipCheckpoints.isEmpty {
+            if !model.selectedCheckpointRecords.isEmpty {
                 let done = model.selectedClipCheckpoints.reduce(0) { $0 + $1.completedWindows }
                 let total = model.selectedClipCheckpoints.reduce(0) { $0 + $1.totalWindows }
-                Text("이어하기 가능 · \(done)/\(total)구간 완료됨 · 원본·설정이 같을 때만 재사용").font(JH.Font.micro)
+                if total > 0 { Text("현재 원본·설정으로 재사용 가능 · \(done)/\(total)구간").font(JH.Font.micro) }
+                else { Text("보관된 인식 기록 \(model.selectedCheckpointRecords.count)개 · 현재 원본·설정의 재사용 확인 전").font(JH.Font.micro) }
                 HStack {
                     Button("체크포인트 삭제") { model.deleteSelectedCheckpoints() }
+                    Button("오래된 기록 정리") { model.cleanInactiveCheckpoints() }
                     Button("처음부터 다시 인식") { model.restartTranscriptionFromScratch() }.disabled(!model.transcriptionReady)
                 }.disabled(model.busyDocument)
             }
@@ -74,10 +84,11 @@ struct SpeechTools: View {
                     Text("한국어").tag("ko"); Text("영어").tag("en"); Text("일본어").tag("ja"); Text("자동 감지").tag("auto")
                 }
                 Picker("대사 채널", selection: $model.speechOptions.channel) {
-                    Text("자동 · 가장 큰 채널").tag(-1)
-                    ForEach(0..<8) { Text("채널 \($0 + 1)").tag($0) }
+                    Text("자동 · 채널 조합").tag(-1)
+                    ForEach(0..<32) { Text("채널 \($0 + 1)").tag($0) }
                 }
                 Toggle("정확도 우선 탐색", isOn: $model.speechOptions.accurate)
+                Toggle("혼합 언어 구간 확인·보정", isOn: $model.speechOptions.languageRepairEnabled).disabled(model.speechOptions.language != "auto")
                 HStack {
                     Button("선택 채널 10초 미리듣기") { model.playChannelPreview() }.disabled(model.selectedSpeechClips.isEmpty)
                     Button("정지") { model.stopAudition() }.disabled(model.auditionID == nil)
@@ -86,20 +97,23 @@ struct SpeechTools: View {
             }.disabled(model.busyDocument)
             DisclosureGroup("자막 번역 설정") {
                 Picker("번역 언어", selection: $model.translationTargetLanguage) {
-                    ForEach(CaptionLanguage.allCases, id: \.self) { Text($0.label).tag($0.rawValue) }
+                    ForEach(CaptionLanguage.allCases, id: \.self) { Text(UIL10n.text($0.label)).tag($0.rawValue) }
                 }
                 Picker("원문 언어", selection: $model.translationSourceLanguage) {
                     Text("자동 · 음성 인식 결과 사용").tag("auto")
-                    ForEach(CaptionLanguage.allCases, id: \.self) { Text($0.label).tag($0.rawValue) }
+                    ForEach(CaptionLanguage.allCases, id: \.self) { Text(UIL10n.text($0.label)).tag($0.rawValue) }
                 }
                 Toggle("원문·번역을 함께 표시", isOn: $model.bilingualTranslation)
+                Toggle("새 번역 자막을 안전 영역에 맞춤", isOn: $model.fitNewTranslatedCaptions)
+                Text("새로 생성한 자막의 크기·위치만 조정합니다. 문구와 시간, 직접 고친 번역은 유지합니다.").font(JH.Font.micro).foregroundStyle(.secondary)
                 Picker("번역 말투", selection: $model.translationStyle) {
-                    ForEach(TranslationStyle.allCases, id: \.self) { Text($0.label).tag($0.rawValue) }
+                    ForEach(TranslationStyle.allCases, id: \.self) { Text(UIL10n.text($0.label)).tag($0.rawValue) }
                 }
                 GlossaryEditor(model: model)
                 TextField("빠른 용어집 · 이번 번역에만 · 원문=번역, 줄마다", text: $model.translationGlossaryText)
                     .textFieldStyle(.roundedBorder)
-                Button("원문 자막 전체 번역") { model.translateCaptionTracks() }.disabled(model.captionClips.isEmpty)
+                Button("번역 생성·오래된 자동 번역 갱신") { model.translateCaptionTracks() }.disabled(model.captionClips.isEmpty)
+                Text("최신 번역과 직접 고친 번역은 보존합니다. 수동 번역 교체는 자막 목록의 ‘이 번역 새로 생성’을 사용하세요. 실행취소할 수 있습니다.").font(JH.Font.micro)
                 Button("원문 자막 표시") { model.showOriginalCaptionTracks() }.disabled(model.captionClips.isEmpty)
                 Text("한국어·일본어·영어 상호 번역 · macOS 26 이상 · Apple 번역 언어팩 필요. 원문은 숨긴 트랙에 보존하며 번역은 별도로 교정할 수 있습니다.").font(JH.Font.micro)
             }.disabled(model.busyDocument)
@@ -111,6 +125,7 @@ struct SpeechTools: View {
                 Button("자동 자막 생성") { model.transcribeSelection() }
                     .buttonStyle(.jhPrimary).disabled(model.selectedSpeechClips.isEmpty || model.busyDocument)
             } else {
+                Text("파일 선택 전에 모델을 설치할 필요는 없습니다. 음성 인식 실행 전 모델을 설치하세요.").font(JH.Font.micro).foregroundStyle(.secondary)
                 Button("Whisper 모델 설치…") { model.installSpeechModel() }.disabled(model.busyDocument)
             }
             if model.transcriptionActive {
@@ -119,14 +134,29 @@ struct SpeechTools: View {
                 if let detail = model.transcriptionDetail { Text(SpeechTools.describe(detail)).font(JH.Font.micro).foregroundStyle(.secondary) }
                 Button("자막 생성 취소") { model.cancelProductivity() }
             }
-            DisclosureGroup("대본으로 정확도 평가") {
-                Text("영상과 같은 이름의 .srt(시간 포함) 또는 .txt 대본과 선택 클립의 원문 자막을 비교합니다. 대본이 없으면 수치를 표시하지 않습니다.").font(JH.Font.micro).foregroundStyle(.secondary)
+            DisclosureGroup("자막 평가") {
+                Text("사람 검수 JSON은 원본·구간·언어·검수 버전을 확인합니다. 일반 SRT/TXT는 대본 비교이며 검수된 정답으로 인증하지 않습니다.").font(JH.Font.micro).foregroundStyle(.secondary)
                 HStack {
                     Button("옆 대본으로 평가") { model.evaluateSelectedCaptions() }
-                    Button("대본 선택…") { model.chooseReferenceAndEvaluate() }
+                    Button("일반 대본 선택…") { model.chooseReferenceAndEvaluate() }
                 }.disabled(model.selectedSpeechClips.isEmpty || model.busyDocument)
+                Button("사람 검수 JSON 평가…") { model.chooseHumanReferenceAndEvaluate() }.disabled(model.selectedSpeechClips.isEmpty || model.busyDocument)
+                if let reason=model.evaluationAttemptReason,model.evaluationRetainedPrevious {
+                    Text("이번 평가: 수치 없음 · " + reason).font(JH.Font.micro).foregroundStyle(.secondary)
+                }
+                Text("글자 오류율은 띄어쓰기를 제외합니다. 한국어 단어 오류율은 어절 기준이라 띄어쓰기의 영향을 받습니다.").font(JH.Font.micro).foregroundStyle(.secondary)
+                if model.evaluationActive {
+                    ProgressView(value:model.evaluationProgress).accessibilityLabel("정확도 평가 진행률")
+                    Text(model.productivityStatus).font(JH.Font.micro)
+                    Button("평가 취소") { model.cancelProductivity() }
+                }
                 if let report = model.lastEvaluation {
+                    if model.evaluationActive || model.evaluationRetainedPrevious { Text("이전 완료 평가").font(JH.Font.micro).foregroundStyle(.secondary) }
                     Text(EditorModel.summary(report)).font(JH.Font.micro)
+                    if let human=report.humanReference {
+                        Text("시간 평가: " + human.timingReason).font(JH.Font.micro).foregroundStyle(.secondary)
+                        Text("검수자 선언에 근거한 평가입니다. 앱이 실제 청취 여부를 인증하지는 않습니다.").font(JH.Font.micro).foregroundStyle(.secondary)
+                    }
                     if let url = model.lastEvaluationReportURL { Button("보고서 보기") { NSWorkspace.shared.activateFileViewerSelecting([url]) } }
                 }
             }
@@ -135,6 +165,10 @@ struct SpeechTools: View {
         }.buttonStyle(.jhTool).font(JH.Font.caption)
             .onAppear { model.refreshTranscriptionStatus(); model.refreshCheckpointSummaries() }
             .onChange(of: model.selectedClipIDs) { model.refreshCheckpointSummaries() }
+            .onChange(of: model.speechOptions) { model.refreshCheckpointSummaries() }
+            .onChange(of: model.skipNonSpeech) { model.refreshCheckpointSummaries() }
+            .onChange(of: model.voiceActivityPolicy) { model.refreshCheckpointSummaries() }
+            .onChange(of: model.speechModelID) { model.refreshCheckpointSummaries() }
     }
     /// "구간 3/12 · 원본 10:00~ · 재사용 2 · 남은 예상 약 4분" — the estimate appears only once
     /// this run has recognised a window, so a resumed run never shows an invented number.

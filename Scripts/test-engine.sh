@@ -2,8 +2,9 @@
 set -euo pipefail
 JHCUT_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$JHCUT_ROOT"
+source Scripts/probe-common.sh
 # The main build produces the exact core used by the editor. Set JHCUT_ENGINE_BUILD to an isolated core for development.
-JHCUT_ENGINE_BUILD="${JHCUT_ENGINE_BUILD:-$JHCUT_ROOT/Build}"
+JHCUT_ENGINE_BUILD="${JHCUT_ENGINE_BUILD:-$build_dir}"
 if [[ ! -f "$JHCUT_ENGINE_BUILD/JHCutCore.swiftmodule" || ! -f "$JHCUT_ENGINE_BUILD/libJHCutCore.dylib" ]]; then
   if [[ "$JHCUT_ENGINE_BUILD" != "$JHCUT_ROOT/Build" ]]; then
     echo "Core module is missing in $JHCUT_ENGINE_BUILD. Build it before running this probe." >&2
@@ -29,6 +30,6 @@ fi
 "$JHCUT_TOOLCHAIN/swiftc" -swift-version 5 -target "$JHCUT_ARCH-apple-macos14.0" -sdk "$JHCUT_TEST_SDK" -O -g \
   -parse-as-library -I "$JHCUT_ENGINE_BUILD" -L "$JHCUT_ENGINE_BUILD" -lJHCutCore \
   -Xlinker -rpath -Xlinker @executable_path \
-  Validation/Fixtures.swift Validation/MediaInspection.swift Tests/EngineProbe.swift \
+  Validation/Fixtures.swift Validation/MediaInspection.swift Tests/ProbeWorkspace.swift Tests/EngineProbe.swift \
   -o "$JHCUT_ENGINE_BUILD/EngineProbe"
 exec "$JHCUT_ENGINE_BUILD/EngineProbe" "$JHCUT_OUTPUT"

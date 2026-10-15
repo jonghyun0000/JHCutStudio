@@ -6,14 +6,18 @@ import JHCutCore
 @main struct BatchProbe {
  @MainActor static func main() async throws {
   setbuf(stdout, nil); _ = NSApplication.shared
-  let root = URL(fileURLWithPath: CommandLine.arguments.dropFirst().first ?? "Artifacts/Upgrade-0.7/Batch", isDirectory: true).standardizedFileURL
+  let root = try ProbeWorkspace.prepare(defaultPath: "Artifacts/Upgrade-0.7/Batch")
   try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
   var rows: [[String: Any]] = []
   func check(_ name: String, _ passed: Bool, _ detail: String = "") { rows.append(["name": name, "passed": passed, "detail": detail]); print("\(passed ? "PASS" : "FAIL") \(name) \(detail)") }
   func save() { try? JSONSerialization.data(withJSONObject: rows, options: [.prettyPrinted, .sortedKeys]).write(to: root.appendingPathComponent("checks.json")) }
   defer { save() }
 
-  let source = URL(fileURLWithPath: "Artifacts/Upgrade-0.7/Evaluation/Speech-ko/ko-timed.mp4").standardizedFileURL
+  // This suite owns its fixture: no dependency on a previous evaluation run or user media.
+  let source = root.appendingPathComponent("batch-carrier.mp4")
+  var fixture = Project(name: "Batch carrier"); fixture.sequence.width = 640; fixture.sequence.height = 360
+  fixture.sequence.tracks[2].clips = [Clip(name: "Carrier", duration: MediaTime(14, 1), title: Title(text: "·", fontSize: 8))]
+  try await ExportJob().export(plan: TimelineRenderer.build(project: fixture), to: source) { _ in }
   let asset = try await MediaImporter.inspect(url: source)
   var p = Project(name: "일괄 편집"); p.sequence.width = 1080; p.sequence.height = 1920; p.assets = [asset]
   let parent = Clip(name: "영상", assetID: asset.id, start: .zero, duration: asset.duration)

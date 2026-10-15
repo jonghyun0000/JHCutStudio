@@ -3,7 +3,7 @@ import JHCutCore
 
 @main struct ConnectedEditingProbe {
  static func main() throws {
-  let root = URL(fileURLWithPath: CommandLine.arguments.dropFirst().first ?? "Artifacts/Upgrade-0.5/Connected")
+  let root = try ProbeWorkspace.prepare(defaultPath: "Artifacts/Upgrade-0.5/Connected")
   try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
   var checks: [[String: Any]] = []
   func check(_ name: String, _ value: Bool) { checks.append(["name": name, "passed": value]); print("\(value ? "PASS" : "FAIL") \(name)") }
