@@ -91,7 +91,7 @@ For a fresh app build and generated-fixture checks:
 python3 -B Scripts/verification-run.py --suites domain compatibility productivity
 ```
 
-The domain lane additionally requires an installed Xcode XCTest framework; set `JHCUT_XCODE` to that Xcode's developer directory if needed. [Public CI](.github/workflows/public-generated.yml) separates these generated probes from private-footage and installed-model checks. The workflow has been prepared locally; hosted execution is still pending.
+The domain lane additionally requires an installed Xcode XCTest framework; set `JHCUT_XCODE` to that Xcode's developer directory if needed. [Public CI](.github/workflows/public-generated.yml) separates these generated probes from private-footage and installed-model checks. On 2026-10-15 UTC (2026-10-16 KST), the [PR hosted run](https://github.com/jonghyun0000/JHCutStudio/actions/runs/38769007139) built the full app and passed 138 generated checks (55 domain, 46 compatibility, 37 productivity), with 10 Python runner tests passed separately. See [the dated scope and limits](docs/RELEASE-READINESS.md#hosted-ci-evidence); [Actions](https://github.com/jonghyun0000/JHCutStudio/actions/workflows/public-generated.yml) shows subsequent results. This result does not establish signed installation or recognition accuracy.
 
 Each run writes a unique directory under `Artifacts/Runs/`, with a source-bound index, build, logs and output evidence. Check the terminal status, suite exit codes and file hashes. Do not reuse or overwrite old run directories. The current default list has **73 suites**; running a subset does not prove all 73 pass. Full local validation additionally needs the documented private dataset, an installed model and other feature-specific inputs.
 

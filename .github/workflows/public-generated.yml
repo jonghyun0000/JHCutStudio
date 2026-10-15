@@ -141,3 +141,18 @@ jobs:
           if not valid:
               raise SystemExit('Public regression did not satisfy its complete generated-only contract.')
           PYCODE
+
+      # Diagnostics only. Never upload Build, Outputs, private inputs or models.
+      # If setup fails before a run exists, warn; the earlier failing step stays failed.
+      - name: Retain generated verification index and logs
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: generated-diagnostics-${{ github.run_id }}-${{ github.run_attempt }}
+          path: |
+            Artifacts/Runs/*/verification-index.json
+            Artifacts/Runs/*/Logs/**
+          if-no-files-found: warn
+          retention-days: 14
+          include-hidden-files: false
+          archive: true
