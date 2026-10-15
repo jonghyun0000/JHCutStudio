@@ -6,6 +6,16 @@ import JHCutCore
 /// Uses actual UIL10n/AppUILanguage from App/EditorModel.swift, never a copied implementation.
 /// No editor construction, app launch, standard preference writes, or network requests.
 @main struct UILocalizationProbe {
+    // Actual UIL10n.format call sites. Ordinary percentage prose is not a format input.
+    static let captionFormatKeys: Set<String> = [
+        "현재 원본·설정으로 재사용 가능 · %ld/%ld구간",
+        "보관된 인식 기록 %ld개 · 현재 원본·설정의 재사용 확인 전",
+        "채널 %ld",
+        "확인 필요 %ld개",
+        "원본: %@%@",
+        " · 채널 %ld",
+        "선택 %ld개 · 숨긴 원문·번역 트랙은 바꾸지 않습니다",
+    ]
     static func catalog(_ url: URL) throws -> [String: String] {
         guard let result = try PropertyListSerialization.propertyList(from: Data(contentsOf: url), options: [], format: nil) as? [String: String] else { throw ProjectError("Catalog is not an OpenStep string dictionary") }
         return result
@@ -58,8 +68,9 @@ import JHCutCore
         check("Real catalogs parse and contain first-use translations", !ko.isEmpty && en["미디어 가져오기…"] == "Import Media…" && en["저장하지 않은 변경사항이 있습니다."] == "You have unsaved changes.")
         check("Real catalog keys match exactly", Set(ko.keys) == Set(en.keys), "ko=\(ko.count) en=\(en.count)")
         check("All translated catalog values are nonempty", ko.values.allSatisfy { !$0.isEmpty } && en.values.allSatisfy { !$0.isEmpty })
-        let mismatch = try ko.keys.filter { $0.hasPrefix("ui.") }.sorted().filter { try specifiers(ko[$0]!) != specifiers(en[$0] ?? "") }
-        check("Every named format preserves argument types widths and order", mismatch.isEmpty, mismatch.joined(separator: ", "))
+        check("Every declared caption format key exists in both catalogs", captionFormatKeys.isSubset(of: Set(ko.keys)) && captionFormatKeys.isSubset(of: Set(en.keys)))
+        let mismatch = try ko.keys.filter { $0.hasPrefix("ui.") || captionFormatKeys.contains($0) }.sorted().filter { try specifiers(ko[$0]!) != specifiers(en[$0] ?? "") }
+        check("Every declared format (ui.* and seven caption keys) preserves argument types widths and order", mismatch.isEmpty, mismatch.joined(separator: ", "))
         let fixture = output.appendingPathComponent("Fixture.bundle")
         try FileManager.default.createDirectory(at: fixture, withIntermediateDirectories: false)
         try PropertyListSerialization.data(fromPropertyList: ["CFBundleIdentifier": "studio.jhcut.probe.resources." + UUID().uuidString, "CFBundlePackageType": "BNDL", "CFBundleDevelopmentRegion": "ko", "CFBundleLocalizations": ["ko", "en"]], format: .xml, options: 0).write(to: fixture.appendingPathComponent("Info.plist"))
@@ -80,6 +91,28 @@ import JHCutCore
         guard let emptyBundle = Bundle(url: empty) else { throw ProjectError("Empty resource fixture bundle unavailable") }
         check("Missing language resource retains readable literal", UIL10n.text("저장", bundle: emptyBundle, language: "en") == "저장")
         check("Missing language resource retains readable named format", UIL10n.format("ui.saved.file", bundle: emptyBundle, language: "en", arguments: ["내 원본 100%.jhcut"]) == "저장됨 · 내 원본 100%.jhcut")
+        check("Reusable caption-region format retains both singular and multiple counts", [(1, 3), (2, 4)].allSatisfy { done, total in
+            UIL10n.format("현재 원본·설정으로 재사용 가능 · %ld/%ld구간", bundle: bundle, language: "en", arguments: [done, total]) == "Reusable regions with the current source and settings: \(done)/\(total)"
+        })
+        check("Stored caption-record format retains count and unverified-reuse warning", [1, 2].allSatisfy { count in
+            UIL10n.format("보관된 인식 기록 %ld개 · 현재 원본·설정의 재사용 확인 전", bundle: bundle, language: "en", arguments: [count]) == "Saved transcription records: \(count) · Reuse with the current source and settings has not been checked"
+        })
+        check("Caption channel picker format renders one and thirty-two", [1, 32].allSatisfy { channel in
+            UIL10n.format("채널 %ld", bundle: bundle, language: "en", arguments: [channel]) == "Channel \(channel)"
+        })
+        check("Caption review-count format handles singular and multiple without noun agreement", [1, 3].allSatisfy { count in
+            UIL10n.format("확인 필요 %ld개", bundle: bundle, language: "en", arguments: [count]) == "\(count) to review"
+        })
+        let captionFilename = "저장 100% %@ 한국어_日本語.mov"
+        let captionSourceEnglish = UIL10n.format("원본: %@%@", bundle: bundle, language: "en", arguments: [captionFilename, " · Channel 1"])
+        let captionSourceKorean = UIL10n.format("원본: %@%@", bundle: bundle, language: "ko", arguments: [captionFilename, " · 채널 1"])
+        check("Caption speaker-source format preserves adversarial filename and suffix literally in both languages", captionSourceEnglish == "Source: " + captionFilename + " · Channel 1" && captionSourceKorean == "원본: " + captionFilename + " · 채널 1")
+        check("Caption speaker-channel suffix format retains separator and channel counts", [1, 2].allSatisfy { channel in
+            UIL10n.format(" · 채널 %ld", bundle: bundle, language: "en", arguments: [channel]) == " · Channel \(channel)"
+        })
+        check("Caption batch-count format handles one and multiple with hidden-track scope", [1, 3].allSatisfy { count in
+            UIL10n.format("선택 %ld개 · 숨긴 원문·번역 트랙은 바꾸지 않습니다", bundle: bundle, language: "en", arguments: [count]) == "\(count) selected · Hidden original and translation tracks are unchanged"
+        })
         let filename = "내 원본 100% %@ 日本語.mov"
         check("English library preview preserves asset names literally", UIL10n.format("ui.library.asset.preview", bundle: bundle, language: "en", arguments: [filename]) == "Preview " + filename)
         check("Library duration uses English units and decimal precision", UIL10n.format("ui.library.seconds", bundle: bundle, language: "en", arguments: [12.25]) == "12.2 s · ")

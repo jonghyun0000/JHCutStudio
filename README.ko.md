@@ -1,8 +1,16 @@
 # JH CUT Studio 0.7
 
-[English](README.md) · [출시 준비 상태](docs/RELEASE-READINESS.md) · [기여 안내](CONTRIBUTING.md)
+[English](README.md) · [공개 사이트](https://jhcut-studio.jonghyun04.chatgpt.site) · [편집 시작 샘플](https://github.com/jonghyun0000/JHCutStudio/releases/tag/samples-0.7.0-v2) · [출시 준비 상태](docs/RELEASE-READINESS.md) · [기여 안내](CONTRIBUTING.md)
 
 Mac에서 계정·구독·자체 워터마크 없이 편집·저장·출력하는 로컬 영상 편집기입니다. 개발 버전은 **0.7.0, 빌드 8**이며 정식 Developer ID 서명·공증된 공개 설치 파일은 준비 중입니다. 상용 전문 편집기와 같은 완성도나 전체 요구 완료를 주장하지 않습니다.
+
+## 실제 앱 화면
+
+![생성 Vertical Story 샘플을 연 한국어 편집기](docs/images/editor-ko.jpg)
+
+![Inspector에 한국어가 남아 있는 부분 영어 편집기](docs/images/editor-en-partial.jpg)
+
+로컬 개발 앱0.7.0/빌드8의 실제 화면이며, 이후 자동 자막 영어 문구 65개 확장 전 캡처입니다. 영어는 부분 지원이고 고급 Inspector에는 한국어가 남아 있습니다. MIT 샘플의 생성 그래픽·수동 자막·테스트 화음이며 음성 인식 결과가 아닙니다. 정식 서명된 설치 파일이나 사용 녹화를 뜻하지 않습니다. [화면 출처와 원본 SHA](docs/images/README.md)를 확인하세요.
 
 ## 빌드와 실행
 
@@ -17,7 +25,7 @@ bash Scripts/run.sh
 
 ## 첫 편집
 
-한영 [첫 편집 가이드](docs/QUICKSTART.md)를 따라 시작할 수 있습니다.
+한영 [첫 편집 가이드](docs/QUICKSTART.md)를 따라 시작할 수 있습니다. [공개 사이트](https://jhcut-studio.jonghyun04.chatgpt.site)에는 실제 앱 스크린샷 3장과 소스·[샘플 3종](https://github.com/jonghyun0000/JHCutStudio/releases/tag/samples-0.7.0-v2) 링크가 있습니다. 샘플 전용 prerelease는 MIT 고지를 포함한 생성 그래픽·수동 자막·수학적 테스트 화음이며 앱 설치 파일이나 음성 인식 정확도 데모가 아닙니다. 앱 설치 버튼은 비활성 상태이고 실제 사용 녹화는 아직 미완료입니다.
 
 1. 지원 영상을 가져와 타임라인에 배치합니다. 모델이 없어도 수동 편집·저장·출력이 됩니다.
 2. Space로 재생/일시정지, Cmd+B로 분할, Cmd+Z로 실행취소, Cmd+S로 저장합니다.
@@ -42,10 +50,10 @@ bash Scripts/run.sh
 소스에 연결된 통합 runner에는 유효한 Git HEAD가 있는 독립 체크아웃(예: 검토한 리비전의 clone)이 필요합니다. source-review ZIP은 `Scripts/build.sh`로 빌드할 수 있지만 Git 이력이 없으므로 아래 통합 검사를 ZIP 안에서 바로 실행할 수 없습니다. 검증할 브랜치·커밋을 직접 선택하고, 상위의 무관한 저장소를 이 소스의 Git 식별자로 사용하지 마세요. GitHub에 소스가 있는 것과 정식 서명된 공개 다운로드의 인수 완료는 별개입니다.
 
 ```bash
-python3 -B Scripts/verification-run.py --suites domain compatibility productivity
+python3 -B Scripts/verification-run.py --suites domain compatibility productivity ui-localization
 ```
 
-domain에는 Xcode XCTest가 필요합니다. [공개 CI](.github/workflows/public-generated.yml)는 생성 fixture와 전체 앱 컴파일을 대상으로 합니다. 2026-10-16 KST(2026-10-15 UTC) [PR hosted 검사](https://github.com/jonghyun0000/JHCutStudio/actions/runs/38769007139)에서 전체 앱 빌드와 생성 검사 138개(domain 55, compatibility 46, productivity 37)가 통과했고, Python runner 검사 10개도 별도로 통과했습니다. [검증 범위와 한계](docs/RELEASE-READINESS.md#hosted-ci-evidence), [이후 Actions 결과](https://github.com/jonghyun0000/JHCutStudio/actions/workflows/public-generated.yml)를 확인하세요. 서명된 설치나 음성 인식 정확도를 입증한 결과는 아닙니다. 기본 전체 목록에는 비공개 실사 평가 입력/모델/언어팩이 필요한 검사가 포함됩니다. 개인 References와 결과 Artifacts는 이 공개 소스 후보에 포함하지 않습니다. private probe의 파일명은 로컬 평가 계약을 설명하며 임의 영상으로 대체해 같은 정확도 결과를 주장할 수 없습니다.
+domain에는 Xcode XCTest가 필요합니다. [공개 CI](.github/workflows/public-generated.yml)는 생성 fixture와 전체 앱 컴파일을 대상으로 합니다. 2026-10-16 KST(2026-10-15 UTC) [main hosted 검사](https://github.com/jonghyun0000/JHCutStudio/actions/runs/38773524663)는 `5f77ae1bb30021f7317bd5b32955fb72c9a4af28`의 전체 앱 빌드와 생성 검사 138개(domain 55, compatibility 46, productivity 37)를 통과했습니다. Python runner 10개와 workspace 검사 16개도 각각 별도로 통과했습니다. 진단 artifact에는 검증 index와 로그만 보존하며 출력·컴파일 바이너리는 포함하지 않습니다. [검증 범위와 한계](docs/RELEASE-READINESS.md#hosted-ci-evidence), [이후 Actions 결과](https://github.com/jonghyun0000/JHCutStudio/actions/workflows/public-generated.yml)를 확인하세요. 서명된 설치나 음성 인식 정확도를 입증한 결과는 아닙니다. 기본 전체 목록에는 비공개 실사 평가 입력/모델/언어팩이 필요한 검사가 포함됩니다. 개인 References와 결과 Artifacts는 이 공개 소스 후보에 포함하지 않습니다. private probe의 파일명은 로컬 평가 계약을 설명하며 임의 영상으로 대체해 같은 정확도 결과를 주장할 수 없습니다.
 
 사람 정답이 없으므로 실제 음성 정확도 CER/WER와 번역 의미 품질은 점수화하지 않습니다. 자동 테스트 통과를 전체 완성도 점수로 환산하지 않습니다. [35개 요구와 고급 로드맵](docs/GOAL-REQUIREMENTS-2026-10-11.md), [중립 원본 명세](docs/ORIGINAL-PRODUCT-SPEC-2026-10-11.txt), [출시 준비 상태](docs/RELEASE-READINESS.md)를 유지합니다.
 

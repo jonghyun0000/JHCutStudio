@@ -63,16 +63,16 @@ struct SpeechTools: View {
             Toggle("말소리 분석으로 인식 구간 줄이기", isOn: $model.skipNonSpeech).disabled(model.busyDocument)
             if model.skipNonSpeech {
                 Picker("인식 구간 정책", selection: $model.voiceActivityPolicy) {
-                    ForEach(VoiceActivityPolicy.allCases, id: \.self) { Text($0.label).tag($0) }
+                    ForEach(VoiceActivityPolicy.allCases, id: \.self) { Text(UIL10n.text($0.label)).tag($0) }
                 }.disabled(model.busyDocument)
-                Text(model.voiceActivityPolicy.detail).font(JH.Font.micro).foregroundStyle(.secondary)
+                Text(UIL10n.text(model.voiceActivityPolicy.detail)).font(JH.Font.micro).foregroundStyle(.secondary)
             }
             VoiceActivityRow(model: model)
             if !model.selectedCheckpointRecords.isEmpty {
                 let done = model.selectedClipCheckpoints.reduce(0) { $0 + $1.completedWindows }
                 let total = model.selectedClipCheckpoints.reduce(0) { $0 + $1.totalWindows }
-                if total > 0 { Text("현재 원본·설정으로 재사용 가능 · \(done)/\(total)구간").font(JH.Font.micro) }
-                else { Text("보관된 인식 기록 \(model.selectedCheckpointRecords.count)개 · 현재 원본·설정의 재사용 확인 전").font(JH.Font.micro) }
+                if total > 0 { Text(UIL10n.format("현재 원본·설정으로 재사용 가능 · %ld/%ld구간", done, total)).font(JH.Font.micro) }
+                else { Text(UIL10n.format("보관된 인식 기록 %ld개 · 현재 원본·설정의 재사용 확인 전", model.selectedCheckpointRecords.count)).font(JH.Font.micro) }
                 HStack {
                     Button("체크포인트 삭제") { model.deleteSelectedCheckpoints() }
                     Button("오래된 기록 정리") { model.cleanInactiveCheckpoints() }
@@ -85,7 +85,7 @@ struct SpeechTools: View {
                 }
                 Picker("대사 채널", selection: $model.speechOptions.channel) {
                     Text("자동 · 채널 조합").tag(-1)
-                    ForEach(0..<32) { Text("채널 \($0 + 1)").tag($0) }
+                    ForEach(0..<32) { Text(UIL10n.format("채널 %ld", $0 + 1)).tag($0) }
                 }
                 Toggle("정확도 우선 탐색", isOn: $model.speechOptions.accurate)
                 Toggle("혼합 언어 구간 확인·보정", isOn: $model.speechOptions.languageRepairEnabled).disabled(model.speechOptions.language != "auto")
@@ -142,7 +142,7 @@ struct SpeechTools: View {
                 }.disabled(model.selectedSpeechClips.isEmpty || model.busyDocument)
                 Button("사람 검수 JSON 평가…") { model.chooseHumanReferenceAndEvaluate() }.disabled(model.selectedSpeechClips.isEmpty || model.busyDocument)
                 if let reason=model.evaluationAttemptReason,model.evaluationRetainedPrevious {
-                    Text("이번 평가: 수치 없음 · " + reason).font(JH.Font.micro).foregroundStyle(.secondary)
+                    Text(UIL10n.text("이번 평가: 수치 없음 · ") + reason).font(JH.Font.micro).foregroundStyle(.secondary)
                 }
                 Text("글자 오류율은 띄어쓰기를 제외합니다. 한국어 단어 오류율은 어절 기준이라 띄어쓰기의 영향을 받습니다.").font(JH.Font.micro).foregroundStyle(.secondary)
                 if model.evaluationActive {
@@ -154,7 +154,7 @@ struct SpeechTools: View {
                     if model.evaluationActive || model.evaluationRetainedPrevious { Text("이전 완료 평가").font(JH.Font.micro).foregroundStyle(.secondary) }
                     Text(EditorModel.summary(report)).font(JH.Font.micro)
                     if let human=report.humanReference {
-                        Text("시간 평가: " + human.timingReason).font(JH.Font.micro).foregroundStyle(.secondary)
+                        Text(UIL10n.text("시간 평가: ") + human.timingReason).font(JH.Font.micro).foregroundStyle(.secondary)
                         Text("검수자 선언에 근거한 평가입니다. 앱이 실제 청취 여부를 인증하지는 않습니다.").font(JH.Font.micro).foregroundStyle(.secondary)
                     }
                     if let url = model.lastEvaluationReportURL { Button("보고서 보기") { NSWorkspace.shared.activateFileViewerSelecting([url]) } }
@@ -239,14 +239,16 @@ private struct TrackSettingsRow: View {
 
 /// Voice-activity status and the “captions over silence” check.
 struct VoiceActivityRow: View {
+    @Environment(\.locale) private var uiLocale
     @ObservedObject var model: EditorModel
     var body: some View {
+        let _ = uiLocale.identifier // Refresh dynamic localized review counts.
         VStack(alignment: .leading, spacing: 4) {
             if let report = model.lastVoiceActivity { Text(VoiceActivitySummary.describe(report)).font(JH.Font.micro).foregroundStyle(.secondary) }
             HStack {
                 Button("무음·음악 위 자막 확인") { model.checkCaptionsAgainstVoiceActivity() }
                     .disabled(model.selectedSpeechClips.isEmpty || model.busyDocument)
-                if !model.silentCaptionWarnings.isEmpty { Text("확인 필요 \(model.silentCaptionWarnings.count)개").font(JH.Font.micro).foregroundStyle(JH.Palette.warning) }
+                if !model.silentCaptionWarnings.isEmpty { Text(UIL10n.format("확인 필요 %ld개", model.silentCaptionWarnings.count)).font(JH.Font.micro).foregroundStyle(JH.Palette.warning) }
             }
         }
     }
