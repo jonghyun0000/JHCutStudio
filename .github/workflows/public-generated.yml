@@ -65,7 +65,7 @@ jobs:
         run: |
           set -euo pipefail
           # No --core-only, real-video suites, --transcribe, model or pack install.
-          python3 -B Scripts/verification-run.py --suites domain compatibility productivity
+          python3 -B Scripts/verification-run.py --suites domain compatibility productivity ui-localization
 
       - name: Check app bundle legal files and absent speech model
         run: |
@@ -118,7 +118,7 @@ jobs:
           import json, os
           paths = list(Path('Artifacts/Runs').glob('*/verification-index.json'))
           lines = ['## Public generated-fixture CI', '',
-                   'Full app compilation plus generated domain, compatibility and productivity probes.',
+                   'Full app compilation plus generated domain, compatibility, productivity and UI localization probes.',
                    'No private videos, installed speech model, translation packs, native UI acceptance, signing or notarization.', '']
           valid = False
           if len(paths) == 1:
@@ -131,7 +131,7 @@ jobs:
                        and data.get('buildExitCode') == 0 and data.get('sourceUnchanged') is True
                        and data.get('inputUnchanged') is True and not data.get('inputs')
                        and data.get('infrastructure', {}).get('status') == 'passed'
-                       and [row['suite'] for row in rows] == ['domain', 'compatibility', 'productivity']
+                       and [row['suite'] for row in rows] == ['domain', 'compatibility', 'productivity', 'ui-localization']
                        and all(row['status'] == 'passed' and row['exitCode'] == 0
                                and row['passed'] > 0 and row['failures'] == 0 for row in rows))
           else:

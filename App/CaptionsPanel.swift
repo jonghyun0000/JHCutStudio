@@ -383,15 +383,17 @@ struct SpeakerTools: View {
 }
 
 private struct SpeakerRow: View {
+    @Environment(\.locale) private var uiLocale
     @ObservedObject var model: EditorModel
     let profile: SpeakerProfile
     @State private var name = ""
     @State private var color = ""
     @State private var mergeTarget = ""
     var body: some View {
+        let _ = uiLocale.identifier // Refresh dynamic display strings without changing editor state.
         VStack(alignment: .leading, spacing: 4) {
         let sourceID = SpeakerIdentity.sourceID(profile.id)
-        Text("원본: " + (model.project.assets.first { $0.id == sourceID }?.name ?? "원본 연결 확인 필요") + (SpeakerIdentity.channelIndex(profile.id).map { " · 채널 \($0 + 1)" } ?? " · 수동 화자"))
+        Text(UIL10n.format("원본: %@%@", model.project.assets.first { $0.id == sourceID }?.name ?? UIL10n.text("원본 연결 확인 필요"), SpeakerIdentity.channelIndex(profile.id).map { UIL10n.format(" · 채널 %ld", $0 + 1) } ?? UIL10n.text(" · 수동 화자")))
             .font(JH.Font.micro).foregroundStyle(.secondary)
         HStack(spacing: 6) {
             Circle().fill(Color(nsColor: NSColor(hex: profile.colorHex))).frame(width: 10, height: 10)
@@ -422,6 +424,7 @@ private extension NSColor {
 
 /// Batch edit of the selected visible captions. Empty fields are left unchanged.
 struct CaptionBatchTools: View {
+    @Environment(\.locale) private var uiLocale
     @ObservedObject var model: EditorModel
     @State private var size = ""
     @State private var color = ""
@@ -436,9 +439,10 @@ struct CaptionBatchTools: View {
     @State private var endShift = ""
     @State private var fit = false
     var body: some View {
+        let _ = uiLocale.identifier // Refresh dynamic display strings without changing editor state.
         DisclosureGroup("선택 자막 일괄 편집") {
             VStack(alignment: .leading, spacing: 6) {
-                Text("선택 \(model.batchEditableCaptions.count)개 · 숨긴 원문·번역 트랙은 바꾸지 않습니다").font(JH.Font.micro).foregroundStyle(.secondary)
+                Text(UIL10n.format("선택 %ld개 · 숨긴 원문·번역 트랙은 바꾸지 않습니다", model.batchEditableCaptions.count)).font(JH.Font.micro).foregroundStyle(.secondary)
                 Button("보이는 자막 모두 선택") { model.selectAllVisibleCaptions() }
                 row("글자 크기", $size); row("글자색 RRGGBB", $color); row("외곽선색", $stroke); row("외곽선 두께", $strokeWidth)
                 row("배경색", $background); row("배경 불투명도 0~1", $opacity); row("목표 줄 수", $lines)
@@ -449,7 +453,7 @@ struct CaptionBatchTools: View {
         }.font(JH.Font.label)
     }
     private func row(_ label: String, _ value: Binding<String>) -> some View {
-        HStack { Text(label).font(JH.Font.micro).frame(width: 110, alignment: .leading); TextField("변경 안 함", text: value).textFieldStyle(.roundedBorder) }
+        HStack { Text(UIL10n.text(label)).font(JH.Font.micro).frame(width: 110, alignment: .leading); TextField("변경 안 함", text: value).textFieldStyle(.roundedBorder) }
     }
     private func apply() {
         func number(_ s: String) -> Double? { Double(s.trimmingCharacters(in: .whitespaces)) }
